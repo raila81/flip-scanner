@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Flip Scanner</title>
+<!--
+  Chrome-only Flip Scanner. Open this file in Chrome and bookmark it.
+  Everything runs in the browser using free public APIs:
+  GeckoTerminal (pool lists), DexScreener (pairs, socials), RugCheck (Solana safety), GoPlus (Robinhood safety).
+  Same rules as .claude/skills/flip-check/scan.py and flip_check.py. Keep the two in step when rules change.
+-->
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#15181d; --muted:#667085; --line:#e4e7ec;
+  --accent:#4f46e5; --accent-ink:#ffffff; --pass:#067647; --pass-bg:#e7f6ee;
+  --warn:#b54708; --warn-bg:#fef4e6; --fail:#b42318; --fail-bg:#fdecea; --chip:#eef0f4;
+  --sol:#7c3aed; --rh:#16a34a;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1116; --panel:#161a21; --ink:#e7eaf0; --muted:#98a2b3; --line:#262c36;
+    --accent:#818cf8; --accent-ink:#0e1116; --pass:#4ade80; --pass-bg:#10291c;
+    --warn:#fbbf24; --warn-bg:#2a2112; --fail:#f87171; --fail-bg:#2c1515; --chip:#202631;
+    --sol:#a78bfa; --rh:#4ade80;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1116; --panel:#161a21; --ink:#e7eaf0; --muted:#98a2b3; --line:#262c36;
+  --accent:#818cf8; --accent-ink:#0e1116; --pass:#4ade80; --pass-bg:#10291c;
+  --warn:#fbbf24; --warn-bg:#2a2112; --fail:#f87171; --fail-bg:#2c1515; --chip:#202631;
+  --sol:#a78bfa; --rh:#4ade80;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:20px 16px 48px}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+h1{font-size:22px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+.controls{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}
+.group{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.label{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-right:4px}
+button.scan{border:0;background:var(--accent);color:var(--accent-ink);font-weight:600;padding:10px 16px;border-radius:10px;cursor:pointer;font-size:15px;min-width:64px}
+button.scan:disabled{opacity:.45;cursor:not-allowed}
+button.scan.last{outline:2px solid var(--ink);outline-offset:2px}
+label.src{display:flex;gap:6px;align-items:center;background:var(--chip);padding:8px 12px;border-radius:999px;cursor:pointer;font-size:14px}
+.status{margin-top:12px;font-size:13px;color:var(--muted);display:flex;gap:10px;align-items:center;min-height:20px}
+.bar{height:4px;background:var(--chip);border-radius:4px;margin-top:10px;overflow:hidden;display:none}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s}
+.running .bar{display:block}
+.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s 1s linear infinite;display:none;flex:none}
+.running .spin{display:inline-block}
+@keyframes s{to{transform:rotate(360deg)}}
+.filters{display:flex;gap:8px;margin:20px 0 10px;flex-wrap:wrap}
+.filters button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:999px;cursor:pointer;font-size:13px}
+.filters button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:18px}
+.summary .panel h3{margin:0 0 6px;font-size:15px}
+.summary ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.top{display:flex;gap:10px;align-items:center}
+.logo{width:40px;height:40px;border-radius:10px;background:var(--chip);flex:none;object-fit:cover;display:grid;place-items:center;font-weight:700;color:var(--muted)}
+.title{min-width:0;flex:1}
+.sym{font-weight:700;font-size:17px}
+.name{color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badges{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
+.b-pass{background:var(--pass-bg);color:var(--pass)}
+.b-warn{background:var(--warn-bg);color:var(--warn)}
+.b-sol{background:var(--chip);color:var(--sol)}
+.b-rh{background:var(--chip);color:var(--rh)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.stat{background:var(--bg);border-radius:8px;padding:6px 8px;min-width:0}
+.stat b{display:block;font-size:14px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat span{font-size:11px;color:var(--muted)}
+.up{color:var(--pass)} .down{color:var(--fail)}
+.links{display:flex;flex-wrap:wrap;gap:6px}
+.links a,.links span,.links button{font-size:12px;padding:5px 9px;border-radius:8px;background:var(--chip);color:var(--ink);text-decoration:none;border:0;cursor:pointer;font-family:inherit}
+.links span{opacity:.45;cursor:default;text-decoration:line-through}
+.warns{margin:0;padding:8px 10px 8px 26px;background:var(--warn-bg);color:var(--warn);border-radius:8px;font-size:12.5px}
+.plan{border:1px dashed var(--line);border-radius:10px;padding:8px 10px;font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}
+.plan .h{grid-column:1/-1;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:2px}
+.plan b{font-variant-numeric:tabular-nums}
+.failed{margin-top:22px}
+.failed details{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 16px}
+.failed summary{cursor:pointer;font-weight:600}
+.failed li{margin:6px 0;font-size:13.5px}
+.failed .why{color:var(--fail)}
+.empty{color:var(--muted);text-align:center;padding:40px 10px}
+footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
+.theme{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:13px}
+@media (max-width:520px){.stats{grid-template-columns:repeat(2,1fr)} .grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Flip Scanner</h1>
+      <div class="sub" id="lastinfo">No scan yet</div>
+    </div>
+    <button class="theme" id="theme" type="button">Light / dark</button>
+  </header>
+
+  <section class="panel" id="panel">
+    <div class="controls">
+      <div class="group">
+        <span class="label">Scan last</span>
+        <button class="scan" data-h="3">3h</button>
+        <button class="scan" data-h="6">6h</button>
+        <button class="scan" data-h="12">12h</button>
+        <button class="scan" data-h="24">24h</button>
+        <button class="scan" data-h="48">48h</button>
+      </div>
+      <div class="group">
+        <span class="label">Sources</span>
+        <label class="src"><input type="checkbox" value="pumpfun" checked> pump.fun</label>
+        <label class="src"><input type="checkbox" value="robinhood" checked> Robinhood</label>
+      </div>
+    </div>
+    <div class="bar"><i id="barfill"></i></div>
+    <div class="status"><span class="spin"></span><span id="statustext">Pick a time window to start a scan. A scan takes about 2 to 3 minutes. Keep this tab open while it runs.</span></div>
+  </section>
+
+  <div class="filters" id="filters">
+    <button data-f="all" class="on">All</button>
+    <button data-f="pumpfun">pump.fun</button>
+    <button data-f="robinhood">Robinhood</button>
+    <button data-f="clean">No warnings only</button>
+    <button data-f="social">Has X or Telegram</button>
+  </div>
+
+  <div class="summary" id="summary"></div>
+  <div class="grid" id="grid"></div>
+  <div class="failed" id="failed"></div>
+
+  <footer>Safety scan only. A pass means no traps were found, not that the price will go up. Not financial advice.</footer>
+</div>
+
+<script>
+"use strict";
+// ---------- rules (same as scan.py / flip_check.py) ----------
+const SOURCES = {
+  pumpfun: {
+    label: "pump.fun (Solana)", dexChain: "solana", pages: 10,
+    url: p => `https://api.geckoterminal.com/api/v2/networks/solana/dexes/pumpswap/pools?sort=h24_tx_count_desc&page=${p}`,
+    limits: {minLiq: 20000, maxFdv: 5e6, minTx24: 100, minSells24: 300, minSells1: 10, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10},
+  },
+  robinhood: {
+    label: "Robinhood Chain", dexChain: "robinhood", pages: 5,
+    url: p => `https://api.geckoterminal.com/api/v2/networks/robinhood/pools?sort=h24_tx_count_desc&page=${p}`,
+    limits: {minLiq: 10000, maxFdv: 5e6, minTx24: 50, minSells24: 30, minSells1: 1, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10},
+  },
+};
+const NOT_NEW = new Set(["weth","eth","usdg","usdc","usdt","sol","wsol","wbtc","btc","spy","qqq","nvda","tsla",
+  "aapl","msft","amzn","goog","googl","meta","hood","coin","gme","amc","pltr","mstr"]);
+// Names that borrow fame. Edit freely.
+const FAME = /\b(elon|musk|trump|melania|barron|cz|binance|saylor|vitalik|kanye|ye|drake|taylor|swift|ibm|google|gemini|grok|openai|chatgpt|gpt|claude|anthropic|apple|tesla|nvidia|microsoft|amazon|meta|facebook|robinhood|mercedes|bmw|ferrari|nike|disney|pepsi|coca|starbucks|spacex|x|twitter|united states|usa|official|government|federal|fed|dividend|etf)\b/i;
+const POOL_WORDS = /pool|amm|vault|lock|escrow|streamflow|meteora|raydium|pump fun amm|pumpswap/i;
+const RH_CHAIN_ID = "4663";
+const RH_POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951"; // Uniswap V4 PoolManager
+const RH_LOCKERS = {"0x267444d099b10fb5ed7c3cc7b7c767adca574952": "Pons launch locker"};
+const BURN = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
+const PAUSE = 6000; // between GeckoTerminal calls; the free limit is strict
+
+// ---------- helpers ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const num = x => { const n = parseFloat(x); return Number.isFinite(n) ? n : 0; };
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const t = await r.text();
+  return t.trim() ? JSON.parse(t) : {};
+}
+function money(x) {
+  x = Number(x) || 0;
+  if (x >= 1e6) return "$" + (x / 1e6).toFixed(2) + "M";
+  if (x >= 1e3) return "$" + (x / 1e3).toFixed(1) + "K";
+  if (x >= 1) return "$" + x.toFixed(2);
+  if (x <= 0) return "$0";
+  let d = 2; while (x < Math.pow(10, -(d - 2)) && d < 14) d++;
+  return "$" + x.toFixed(d);
+}
+function sameSizeGroup(pcts) {
+  const s = [...pcts].sort((a, b) => b - a);
+  let best = [];
+  for (const top of s) {
+    const grp = s.filter(x => top - x >= 0 && top - x <= 0.1);
+    if (grp.length >= 3 && grp.reduce((a, b) => a + b, 0) > best.reduce((a, b) => a + b, 0)) best = grp;
+  }
+  return best;
+}
+const sum = a => a.reduce((x, y) => x + y, 0);
+
+// ---------- step 1: pool lists ----------
+async function fetchPools(src, say) {
+  const pools = [];
+  for (let page = 1; page <= src.pages; page++) {
+    say(`${src.label}: reading page ${page} of ${src.pages}`);
+    let d;
+    try { d = await getJSON(src.url(page)); }
+    catch (e) {
+      say("Data site asked us to slow down, waiting 30 seconds");
+      await sleep(30000);
+      try { d = await getJSON(src.url(page)); } catch (e2) { break; }
+    }
+    const data = d.data || [];
+    pools.push(...data);
+    if (data.length < 20) break;
+    await sleep(PAUSE);
+  }
+  return pools;
+}
+
+// ---------- step 2: red-flag filters ----------
+function prefilter(pools, hours, L) {
+  const now = Date.now();
+  const recent = [];
+  for (const p of pools) {
+    const ageH = (now - Date.parse(p.attributes.pool_created_at)) / 3.6e6;
+    if (ageH <= Math.max(48, hours)) recent.push([p, ageH]);
+  }
+  const symCount = {};
+  for (const [p] of recent) { const s = p.attributes.name.split(" / ")[0].trim().toLowerCase(); symCount[s] = (symCount[s] || 0) + 1; }
+
+  const keep = {}, dropped = {}, seen = new Set();
+  for (const [p, ageH] of recent) {
+    const a = p.attributes;
+    const sym = a.name.split(" / ")[0].trim();
+    const token = p.relationships.base_token.data.id.split("_").slice(1).join("_");
+    const tx = a.transactions || {}, t24 = tx.h24 || {}, t1 = tx.h1 || {};
+    const buys24 = t24.buys || 0, sells24 = t24.sells || 0, buys1 = t1.buys || 0, sells1 = t1.sells || 0;
+    const liq = num(a.reserve_in_usd);
+    const fdv = num(a.market_cap_usd) || num(a.fdv_usd);
+    const vol24 = num((a.volume_usd || {}).h24);
+    const chg24 = num((a.price_change_percentage || {}).h24);
+    let reason = null;
+    if (NOT_NEW.has(sym.toLowerCase())) reason = "money or stock token, not a new coin";
+    else if (ageH < 1 || ageH > hours) reason = "outside time window";
+    else if (liq < L.minLiq) reason = `pool under $${L.minLiq / 1000}K`;
+    else if (fdv > L.maxFdv) reason = "market cap over $5M";
+    else if (buys24 + sells24 < L.minTx24 || sells24 < L.minSells24 || sells1 < L.minSells1) reason = "too few sells (maybe can't sell)";
+    else if (chg24 > L.maxChg24) reason = "already up over 2,000%";
+    else if ((sells24 && buys24 / sells24 > L.maxBuyRatio) || (sells1 && buys1 / sells1 > L.maxBuyRatio)) reason = "one-sided buying (over 3 buys per sell)";
+    else if (fdv && vol24 / fdv > L.maxVolToMc) reason = "fake volume (volume over 10x market cap)";
+    else if (symCount[sym.toLowerCase()] > 1 && !seen.has(token)) reason = "copy name (same name launched twice)";
+    else if (FAME.test(sym) || FAME.test(a.name)) reason = "celebrity or company name";
+    if (reason) { dropped[reason] = (dropped[reason] || 0) + 1; continue; }
+    seen.add(token);
+    if (!keep[token] || keep[token].liq < liq) keep[token] = {token, symbol: sym, liq, vol24};
+  }
+  return {keep: Object.values(keep), dropped: Object.entries(dropped).sort((a, b) => b[1] - a[1])};
+}
+
+// ---------- step 3: flip check ----------
+async function findPair(token, chain) {
+  const pairs = await getJSON(`https://api.dexscreener.com/token-pairs/v1/${chain}/${token}`);
+  if (!Array.isArray(pairs) || !pairs.length) return null;
+  return pairs.reduce((a, b) => (((b.liquidity || {}).usd || 0) > ((a.liquidity || {}).usd || 0) ? b : a));
+}
+
+async function solanaSafety(token, pairAddr, F, W, N) {
+  let r;
+  try { r = await getJSON(`https://api.rugcheck.xyz/v1/tokens/${token}/report`); } catch (e) { r = null; }
+  if (!r || !Object.keys(r).length) { W.push("RugCheck gave no data: safety check limited"); return; }
+  if (r.rugged) F.push("RugCheck marks it as rugged");
+  if (r.mintAuthority) F.push("Mint is ON (team can print more coins)");
+  if (r.freezeAuthority) F.push("Freeze is ON (team can freeze your coins)");
+  const fee = (r.transferFee || {}).pct || 0;
+  if (fee > 5) F.push(`Transfer fee ${fee}%`);
+  const markets = r.markets || [];
+  const mk = markets.find(m => m.pubkey === pairAddr) || markets[0];
+  if (mk) {
+    const lp = (mk.lp || {}).lpLockedPct || 0;
+    if (lp < 90) F.push(`Only ${lp.toFixed(0)}% of pool money locked`); else N.push(`Pool money ${lp.toFixed(0)}% locked`);
+  } else W.push("No graduated pool found: may still be on the pump.fun curve");
+  const known = r.knownAccounts || {};
+  const supply = (r.token || {}).supply || 0;
+  const holders = r.topHolders || [];
+  const top = [];
+  for (const h of holders.slice(0, 10)) {
+    const k = known[h.owner] || known[h.address] || {};
+    if (k.type === "AMM" || k.type === "LOCKER" || POOL_WORDS.test(k.name || "")) continue;
+    top.push(h.pct);
+  }
+  const t10 = sum(top);
+  if (t10 > 30) F.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`); else N.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`);
+  const grp = sameSizeGroup(holders.slice(0, 20).map(h => h.pct));
+  if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
+  let biggest = 0, bigNet = 0;
+  for (const n of r.insiderNetworks || []) {
+    const held = n.currentHolding ?? n.tokenAmount;
+    if (supply && held) biggest = Math.max(biggest, held / supply * 100);
+    bigNet = Math.max(bigNet, n.activeAccounts || n.size || 0);
+  }
+  if (biggest > 100) F.push(`Huge linked wallet network (${bigNet} wallets); RugCheck numbers unclear, check the bubble map`);
+  else if (biggest > 10) F.push(`Linked wallet group holds ${biggest.toFixed(1)}%`);
+  else if (bigNet >= 50) W.push(`Linked wallet network of ${bigNet} wallets (often a bundled launch)`);
+  else if (biggest >= 5) W.push(`Linked wallet group holds ${biggest.toFixed(1)}%`);
+  const cb = r.creatorBalance || 0;
+  if (supply && cb / supply * 100 > 5) F.push(`Creator still holds ${(cb / supply * 100).toFixed(1)}%`);
+  N.holders = r.totalHolders;
+}
+
+async function robinhoodSafety(token, pairAddr, F, W, N) {
+  let d;
+  try { d = await getJSON(`https://api.gopluslabs.io/api/v1/token_security/${RH_CHAIN_ID}?contract_addresses=${token}`); } catch (e) { d = {}; }
+  const r = Object.values(d.result || {})[0];
+  if (!r) { W.push("GoPlus gave no data: safety check limited"); return; }
+  const checks = [
+    ["is_mintable", "Mintable (team can print more coins)"], ["owner_change_balance", "Owner can change wallet balances"],
+    ["hidden_owner", "Hidden owner"], ["transfer_pausable", "Transfers can be paused"],
+    ["is_honeypot", "Honeypot (you cannot sell)"], ["cannot_sell_all", "Cannot sell all coins"],
+    ["is_blacklisted", "Team can block wallets"], ["can_take_back_ownership", "Owner can take control back"],
+  ];
+  for (const [k, msg] of checks) if (r[k] === "1") F.push(msg);
+  if (r.slippage_modifiable === "1") W.push("Team can change the tax");
+  if (r.is_open_source !== "1") W.push("Code not public");
+  for (const side of ["buy_tax", "sell_tax"]) if (num(r[side]) * 100 > 5) F.push(`${side.replace("_", " ")} over 5%`);
+  const tok = token.toLowerCase(), pair = (pairAddr || "").toLowerCase();
+  const top = [], contracts = [];
+  for (const h of (r.holders || []).slice(0, 10)) {
+    const a = h.address.toLowerCase(), pct = num(h.percent) * 100;
+    if (BURN.has(a) || a === RH_POOL_MANAGER || a === tok || a === pair || RH_LOCKERS[a] || h.is_locked === 1) continue;
+    top.push(pct);
+    if (h.is_contract === 1) contracts.push(`${a.slice(0, 8)}.. ${pct.toFixed(1)}%`);
+  }
+  const t10 = sum(top);
+  if (t10 > 30) F.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`); else N.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`);
+  if (contracts.length) W.push("Unlabeled contracts in top 10 (could be staking or a lock, or a whale): " + contracts.join(", "));
+  const grp = sameSizeGroup((r.holders || []).slice(0, 20).map(h => num(h.percent) * 100));
+  if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
+  const cp = num(r.creator_percent) * 100;
+  if (cp > 5) F.push(`Creator still holds ${cp.toFixed(1)}%`);
+  const lps = r.lp_holders || [];
+  if (lps.length) {
+    const locked = sum(lps.filter(x => x.is_locked === 1 || RH_LOCKERS[x.address.toLowerCase()]).map(x => num(x.percent))) * 100;
+    if (locked >= 90) N.push(`Pool money in a known lock: ${locked.toFixed(0)}%`);
+    else W.push(`Pool lock not confirmed (${locked.toFixed(0)}% seen locked; GoPlus may miss the main pool)`);
+  } else W.push("Could not see who controls the pool money");
+  N.holders = r.holder_count;
+}
+
+async function check(p) {
+  const chain = p.chainId, b = p.baseToken;
+  const liq = (p.liquidity || {}).usd || 0;
+  const mc = p.marketCap || p.fdv || 0;
+  const price = num(p.priceUsd);
+  const ageMin = (Date.now() - (p.pairCreatedAt || Date.now())) / 60000;
+  const tx1 = (p.txns || {}).h1 || {}, tx24 = (p.txns || {}).h24 || {};
+  const chg = p.priceChange || {};
+  const F = [], W = [], N = [];
+  if (liq < 10000) F.push(`Pool money only ${money(liq)} (under $10K)`);
+  else if (liq < 20000) W.push(`Thin pool: ${money(liq)}`);
+  if (ageMin < 30) W.push(`Only ${ageMin.toFixed(0)} minutes old: sniper bots are still selling`);
+  if ((tx1.buys || 0) >= 20 && (tx1.sells || 0) === 0) F.push("Many buys, zero sells in 1h: maybe you cannot sell");
+  if (mc && liq / mc < 0.05) W.push(`Pool is only ${(liq / mc * 100).toFixed(1)}% of market cap: big sells crash it`);
+  if ((chg.h1 || 0) <= -30) W.push(`Falling hard: ${chg.h1}% in 1h`);
+  let bubblemap = null;
+  if (chain === "solana") { await solanaSafety(b.address, p.pairAddress, F, W, N); bubblemap = `https://app.bubblemaps.io/sol/token/${b.address}`; }
+  else if (chain === "robinhood") await robinhoodSafety(b.address, p.pairAddress, F, W, N);
+  else W.push(`Chain ${chain} not covered: safety check skipped`);
+
+  const info = p.info || {};
+  const soc = {x: null, telegram: null, website: null, image: info.imageUrl || null};
+  for (const s of info.socials || []) {
+    const kind = (s.type || s.platform || "").toLowerCase(), url = s.url || s.handle;
+    if ((kind === "twitter" || kind === "x") && !soc.x) soc.x = url;
+    else if (kind === "telegram" && !soc.telegram) soc.telegram = url;
+  }
+  if ((info.websites || []).length) soc.website = info.websites[0].url;
+
+  return {
+    symbol: b.symbol, name: b.name, chain, token: b.address,
+    verdict: F.length ? "FAIL" : (W.length ? "PASS WITH WARNINGS" : "PASS"),
+    age_h: Math.round(ageMin / 6) / 10, price, mc, liq, vol24: (p.volume || {}).h24 || 0,
+    buys24: tx24.buys || 0, sells24: tx24.sells || 0, chg1: chg.h1 || 0, chg24: chg.h24 || 0,
+    holders: N.holders ?? null, fails: F, warns: W, chart: p.url, bubblemap,
+    plan: {x2: price * 2, x3: price * 3, stop: price * 0.67, max_bet: liq * 0.02}, ...soc,
+  };
+}
+
+// ---------- the scan ----------
+async function runScan(hours, chains, say, progress, onSource) {
+  const result = {hours, started: new Date().toISOString(), sources: []};
+  const totalSteps = chains.reduce((n, k) => n + SOURCES[k].pages + 20, 0);
+  let step = 0;
+  const tick = () => progress(Math.min(0.98, ++step / totalSteps));
+  for (const key of chains) {
+    const src = SOURCES[key];
+    const pools = await fetchPools(src, m => { say(m); tick(); });
+    let {keep, dropped} = prefilter(pools, hours, src.limits);
+    keep = keep.sort((a, b) => b.vol24 - a.vol24).slice(0, 20);
+    say(`${src.label}: ${keep.length} coins left after red-flag filters, running safety checks`);
+    step += 20 - keep.length;
+    const cards = [];
+    for (let i = 0; i < keep.length; i++) {
+      const k = keep[i];
+      say(`${src.label}: safety check ${i + 1} of ${keep.length} (${k.symbol})`);
+      try {
+        const p = await findPair(k.token, src.dexChain);
+        if (p) cards.push(await check(p));
+      } catch (e) { say(`${k.symbol}: check failed`); }
+      tick();
+      await sleep(1000);
+    }
+    const order = {"PASS": 0, "PASS WITH WARNINGS": 1, "FAIL": 2};
+    cards.sort((a, b) => order[a.verdict] - order[b.verdict] || b.liq - a.liq);
+    result.sources.push({key, label: src.label, looked: pools.length, dropped,
+      passed: cards.filter(c => c.verdict !== "FAIL"), failed: cards.filter(c => c.verdict === "FAIL")});
+    onSource(result);
+  }
+  result.finished = new Date().toISOString();
+  progress(1);
+  return result;
+}
+
+// ---------- page ----------
+const $ = s => document.querySelector(s);
+let filter = "all", data = null, running = false;
+
+try { const t = localStorage.getItem("flipTheme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$("#theme").onclick = () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("flipTheme", next); } catch (e) {}
+};
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const safeUrl = u => (typeof u === "string" && /^https?:\/\//i.test(u)) ? u : null;
+const pct = x => { x = Number(x) || 0; const v = Math.abs(x) >= 1000 ? Math.round(x).toLocaleString("en-US") : Math.abs(x) >= 100 ? x.toFixed(0) : x.toFixed(1); return `<b class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : ""}${v}%</b>`; };
+const count = n => { n = Number(n) || 0; return n >= 10000 ? (n / 1000).toFixed(0) + "K" : n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n); };
+const ago = iso => { const m = Math.round((Date.now() - new Date(iso)) / 60000); return m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m ago` : `${Math.floor(m / 1440)} days ago`; };
+const link = (label, url) => { const u = safeUrl(url); return u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${label}</a>` : `<span>${label}</span>`; };
+
+function cardHtml(c, srcKey) {
+  const initials = esc(String(c.symbol || "?").slice(0, 2));
+  const img = safeUrl(c.image) ? `<img class="logo" src="${esc(c.image)}" alt="" data-initials="${initials}">` : `<div class="logo">${initials}</div>`;
+  const verdict = c.verdict === "PASS" ? `<span class="badge b-pass">PASS</span>`
+    : `<span class="badge b-warn">PASS + ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
+  const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : `<span class="badge b-rh">Robinhood</span>`;
+  const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
+  return `<article class="card">
+    <div class="top">${img}
+      <div class="title"><div class="sym">${esc(c.symbol)}</div><div class="name">${esc(c.name)}</div></div>
+      <div class="badges">${verdict}${chain}</div>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>${money(c.mc)}</b><span>Market cap</span></div>
+      <div class="stat"><b>${money(c.liq)}</b><span>Pool</span></div>
+      <div class="stat"><b>${money(c.vol24)}</b><span>Vol 24h</span></div>
+      <div class="stat"><b>${c.age_h}h</b><span>Age</span></div>
+      <div class="stat"><b>${c.holders ? count(c.holders) : "?"}</b><span>Holders</span></div>
+      <div class="stat"><b>${count(c.buys24)}/${count(c.sells24)}</b><span>Buys/sells 24h</span></div>
+      <div class="stat">${pct(c.chg1)}<span>1h</span></div>
+      <div class="stat">${pct(c.chg24)}<span>24h</span></div>
+    </div>
+    <div class="links">
+      ${link("Chart", c.chart)}${link("X", c.x)}${link("Telegram", c.telegram)}${link("Website", c.website)}${c.bubblemap ? link("Bubble map", c.bubblemap) : ""}
+      <button type="button" data-copy="${esc(c.token)}">Copy address</button>
+    </div>
+    ${warns}
+    <div class="plan">
+      <div class="h">Flip plan from ${money(c.price)}</div>
+      <div>Half at 2x: <b>${money(c.plan.x2)}</b></div>
+      <div>Rest at 3x: <b>${money(c.plan.x3)}</b></div>
+      <div>Stop-loss: <b>${money(c.plan.stop)}</b></div>
+      <div>Max bet: <b>${money(c.plan.max_bet)}</b></div>
+    </div>
+  </article>`;
+}
+
+function render() {
+  const r = data;
+  if (!r) { $("#grid").innerHTML = `<div class="empty">No results yet. Press a scan button above.</div>`; return; }
+  $("#lastinfo").textContent = r.finished ? `Last scan: last ${r.hours}h window, finished ${ago(r.finished)}` : `Scanning the last ${r.hours}h...`;
+  document.querySelectorAll("button.scan").forEach(b => b.classList.toggle("last", Number(b.dataset.h) === r.hours));
+  $("#summary").innerHTML = r.sources.map(s => `<div class="panel">
+      <h3>${esc(s.label)}: ${s.passed.length} passed</h3>
+      <div class="sub">Looked at ${s.looked} pools. ${s.failed.length} failed the safety check.</div>
+      <ul>${s.dropped.map(([why, n]) => `<li>${n} dropped: ${esc(why)}</li>`).join("")}</ul>
+    </div>`).join("");
+  let cards = [];
+  r.sources.forEach(s => s.passed.forEach(c => cards.push([c, s.key])));
+  cards = cards.filter(([c, k]) => filter === "all" || filter === k ||
+    (filter === "clean" && c.verdict === "PASS") || (filter === "social" && (safeUrl(c.x) || safeUrl(c.telegram))));
+  $("#grid").innerHTML = cards.length ? cards.map(([c, k]) => cardHtml(c, k)).join("")
+    : `<div class="empty">${r.finished ? "No coins match this filter." : "Coins will show here as each source finishes."}</div>`;
+  const failed = r.sources.flatMap(s => s.failed.map(c => [c, s.label]));
+  $("#failed").innerHTML = failed.length ? `<details><summary>Failed safety (${failed.length})</summary><ul>
+      ${failed.map(([c, l]) => `<li><b>${esc(c.symbol)}</b> <span class="sub">${esc(l)}</span>: <span class="why">${esc(c.fails.join("; "))}</span> ${safeUrl(c.chart) ? `<a href="${esc(c.chart)}" target="_blank" rel="noopener noreferrer">chart</a>` : ""}</li>`).join("")}
+    </ul></details>` : "";
+  document.querySelectorAll("img.logo").forEach(img => img.onerror = () => {
+    const d = document.createElement("div"); d.className = "logo"; d.textContent = img.dataset.initials; img.replaceWith(d);
+  });
+}
+
+function setRunning(on) {
+  running = on;
+  $("#panel").classList.toggle("running", on);
+  document.querySelectorAll("button.scan").forEach(b => b.disabled = on);
+}
+
+document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
+  if (running) return;
+  const chains = [...document.querySelectorAll(".src input:checked")].map(i => i.value);
+  if (!chains.length) { $("#statustext").textContent = "Pick at least one source."; return; }
+  const hours = Number(b.dataset.h);
+  setRunning(true);
+  $("#barfill").style.width = "0";
+  data = {hours, sources: []}; render();
+  try {
+    const res = await runScan(hours, chains,
+      m => $("#statustext").textContent = m,
+      f => $("#barfill").style.width = (f * 100).toFixed(0) + "%",
+      partial => { data = {...partial}; render(); });
+    data = res; render();
+    try { localStorage.setItem("flipLastScan", JSON.stringify(res)); } catch (e) {}
+    const passed = res.sources.reduce((n, s) => n + s.passed.length, 0);
+    $("#statustext").textContent = `Scan finished: ${passed} coin${passed === 1 ? "" : "s"} passed.`;
+  } catch (e) {
+    $("#statustext").textContent = "Scan stopped: " + e.message + ". Try again in a minute.";
+  } finally { setRunning(false); }
+});
+
+document.querySelectorAll("#filters button").forEach(b => b.onclick = () => {
+  filter = b.dataset.f;
+  document.querySelectorAll("#filters button").forEach(x => x.classList.toggle("on", x === b));
+  render();
+});
+
+document.addEventListener("click", e => {
+  const b = e.target.closest("button[data-copy]");
+  if (!b) return;
+  navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy address", 1500); });
+});
+
+window.addEventListener("beforeunload", e => { if (running) { e.preventDefault(); e.returnValue = ""; } });
+
+try { const saved = localStorage.getItem("flipLastScan"); if (saved) data = JSON.parse(saved); } catch (e) {}
+render();
+</script>
+</body>
+</html>

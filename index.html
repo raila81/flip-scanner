@@ -81,6 +81,12 @@ label.src{display:flex;gap:6px;align-items:center;background:var(--chip);padding
 .links a,.links span,.links button{font-size:12px;padding:5px 9px;border-radius:8px;background:var(--chip);color:var(--ink);text-decoration:none;border:0;cursor:pointer;font-family:inherit}
 .links span{opacity:.45;cursor:default;text-decoration:line-through}
 .warns{margin:0;padding:8px 10px 8px 26px;background:var(--warn-bg);color:var(--warn);border-radius:8px;font-size:12.5px}
+.about p{margin:6px 0 0;font-size:13px;color:var(--muted);line-height:1.4}
+.lbl{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;margin-right:6px}
+.l-util{background:var(--pass-bg);color:var(--pass)} .l-meme{background:var(--warn-bg);color:var(--warn)} .l-none{background:var(--chip);color:var(--muted)}
+.note{font-size:12.5px;color:var(--muted);margin:14px 0 0;padding:10px 12px;border:1px dashed var(--line);border-radius:10px}
+button.stop{border:1px solid var(--fail);background:transparent;color:var(--fail);font-weight:600;padding:9px 14px;border-radius:10px;cursor:pointer;font-size:14px;display:none}
+.running button.stop{display:inline-block}
 .plan{border:1px dashed var(--line);border-radius:10px;padding:8px 10px;font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}
 .plan .h{grid-column:1/-1;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:2px}
 .plan b{font-variant-numeric:tabular-nums}
@@ -114,6 +120,7 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
         <button class="scan" data-h="12">12h</button>
         <button class="scan" data-h="24">24h</button>
         <button class="scan" data-h="48">48h</button>
+        <button class="stop" id="stop" type="button">Stop</button>
       </div>
       <div class="group">
         <span class="label">Sources</span>
@@ -131,11 +138,14 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
     <button data-f="robinhood">Robinhood</button>
     <button data-f="clean">No warnings only</button>
     <button data-f="social">Has X or Telegram</button>
+    <button data-f="utility">Says utility</button>
   </div>
 
   <div class="summary" id="summary"></div>
   <div class="grid" id="grid"></div>
+  <div class="failed" id="unchecked"></div>
   <div class="failed" id="failed"></div>
+  <p class="note">The description, website, X and Telegram links come from the coin's own listing. Anyone can write anything there, and the links can lead to scam sites. Never connect a wallet on a site you reached from this page. The utility or meme label is a rough guess from that text, not a verdict.</p>
 
   <footer>Safety scan only. A pass means no traps were found, not that the price will go up. Not financial advice.</footer>
 </div>
@@ -143,18 +153,34 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
 <script>
 "use strict";
 // ---------- rules (same as scan.py / flip_check.py) ----------
+const GT = "https://api.geckoterminal.com/api/v2/networks";
 const SOURCES = {
   pumpfun: {
-    label: "pump.fun (Solana)", dexChain: "solana", pages: 10,
-    url: p => `https://api.geckoterminal.com/api/v2/networks/solana/dexes/pumpswap/pools?sort=h24_tx_count_desc&page=${p}`,
+    label: "pump.fun (Solana)", network: "solana", dexChain: "solana",
+    // The list is "busiest pools of the last 24h", which hides very new coins. For short
+    // windows we also read the volume list and the trending list to widen the net.
+    feeds: hours => [
+      {name: "busiest", pages: 10, url: p => `${GT}/solana/dexes/pumpswap/pools?sort=h24_tx_count_desc&page=${p}`},
+      ...(hours <= 12 ? [
+        {name: "volume", pages: 5, url: p => `${GT}/solana/dexes/pumpswap/pools?sort=h24_volume_usd_desc&page=${p}`},
+        {name: "trending", pages: 1, url: () => `${GT}/solana/trending_pools?duration=1h&page=1`, onlyDex: "pumpswap"},
+      ] : []),
+    ],
     limits: {minLiq: 20000, maxFdv: 5e6, minTx24: 100, minSells24: 300, minSells1: 10, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10},
   },
   robinhood: {
-    label: "Robinhood Chain", dexChain: "robinhood", pages: 5,
-    url: p => `https://api.geckoterminal.com/api/v2/networks/robinhood/pools?sort=h24_tx_count_desc&page=${p}`,
+    label: "Robinhood Chain", network: "robinhood", dexChain: "robinhood",
+    feeds: hours => [
+      {name: "busiest", pages: 5, url: p => `${GT}/robinhood/pools?sort=h24_tx_count_desc&page=${p}`},
+      ...(hours <= 12 ? [{name: "volume", pages: 3, url: p => `${GT}/robinhood/pools?sort=h24_volume_usd_desc&page=${p}`}] : []),
+    ],
     limits: {minLiq: 10000, maxFdv: 5e6, minTx24: 50, minSells24: 30, minSells1: 1, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10},
   },
 };
+const PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"; // Pons launch tool on Robinhood Chain
+// Rough label from the creator's own description. Not a verdict, only a hint.
+const UTIL_WORDS = /\b(app|platform|protocol|sdk|api|agent|agents|ai|infra|infrastructure|launchpad|dex|swap|wallet|bot|tool|tools|network|compute|gpu|defi|lending|staking|revenue|buy-?back|burn|fees?|dashboard|browser|game|marketplace|payments?|data|trading|terminal|server)\b/i;
+const MEME_WORDS = /\b(meme|memecoin|dog|doge|cat|kitten|pepe|frog|inu|shib|moon|wif|hat|vibes?|community|lol|cult|based|degen|pump it|to the moon|just a|no utility|for fun|chad|wojak|ape|monkey|bonk|fart|squirrel|hamster|penguin|duck|goat|mascot|ticker is)\b/i;
 const NOT_NEW = new Set(["weth","eth","usdg","usdc","usdt","sol","wsol","wbtc","btc","spy","qqq","nvda","tsla",
   "aapl","msft","amzn","goog","googl","meta","hood","coin","gme","amc","pltr","mstr"]);
 // Names that borrow fame. Edit freely.
@@ -164,7 +190,7 @@ const RH_CHAIN_ID = "4663";
 const RH_POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951"; // Uniswap V4 PoolManager
 const RH_LOCKERS = {"0x267444d099b10fb5ed7c3cc7b7c767adca574952": "Pons launch locker"};
 const BURN = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
-const PAUSE = 6000; // between GeckoTerminal calls; the free limit is strict
+const PAUSE = 7000; // between GeckoTerminal calls; the free limit is strict
 
 // ---------- helpers ----------
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -196,23 +222,39 @@ function sameSizeGroup(pcts) {
 const sum = a => a.reduce((x, y) => x + y, 0);
 
 // ---------- step 1: pool lists ----------
-async function fetchPools(src, say) {
-  const pools = [];
-  for (let page = 1; page <= src.pages; page++) {
-    say(`${src.label}: reading page ${page} of ${src.pages}`);
-    let d;
-    try { d = await getJSON(src.url(page)); }
-    catch (e) {
-      say("Data site asked us to slow down, waiting 30 seconds");
-      await sleep(30000);
-      try { d = await getJSON(src.url(page)); } catch (e2) { break; }
-    }
-    const data = d.data || [];
-    pools.push(...data);
-    if (data.length < 20) break;
-    await sleep(PAUSE);
+let scanRun = {stopped: false};
+function checkStop() { if (scanRun.stopped) throw new Error("Stopped by you"); }
+
+async function getJSONSlow(url, say) {
+  try { return await getJSON(url); }
+  catch (e) {
+    checkStop();
+    say("Data site asked us to slow down, waiting 30 seconds");
+    await sleep(30000);
+    checkStop();
+    return await getJSON(url);
   }
-  return pools;
+}
+
+async function fetchPools(src, hours, say) {
+  const seen = new Map();
+  let planned = 0, read = 0;
+  for (const feed of src.feeds(hours)) {
+    planned += feed.pages;
+    for (let page = 1; page <= feed.pages; page++) {
+      checkStop();
+      say(`${src.label}: reading ${feed.name} list, page ${page} of ${feed.pages}`);
+      let d;
+      try { d = await getJSONSlow(feed.url(page), say); }
+      catch (e) { if (scanRun.stopped) throw e; break; }
+      read++;
+      const data = (d.data || []).filter(p => !feed.onlyDex || p.relationships.dex.data.id === feed.onlyDex);
+      for (const p of data) if (!seen.has(p.id)) seen.set(p.id, p);
+      if ((d.data || []).length < 20) break;
+      await sleep(PAUSE);
+    }
+  }
+  return {pools: [...seen.values()], read, planned};
 }
 
 // ---------- step 2: red-flag filters ----------
@@ -250,7 +292,7 @@ function prefilter(pools, hours, L) {
     else if (FAME.test(sym) || FAME.test(a.name)) reason = "celebrity or company name";
     if (reason) { dropped[reason] = (dropped[reason] || 0) + 1; continue; }
     seen.add(token);
-    if (!keep[token] || keep[token].liq < liq) keep[token] = {token, symbol: sym, liq, vol24};
+    if (!keep[token] || keep[token].liq < liq) keep[token] = {token, symbol: sym, liq, vol24, ageH};
   }
   return {keep: Object.values(keep), dropped: Object.entries(dropped).sort((a, b) => b[1] - a[1])};
 }
@@ -265,17 +307,25 @@ async function findPair(token, chain) {
 async function solanaSafety(token, pairAddr, F, W, N) {
   let r;
   try { r = await getJSON(`https://api.rugcheck.xyz/v1/tokens/${token}/report`); } catch (e) { r = null; }
-  if (!r || !Object.keys(r).length) { W.push("RugCheck gave no data: safety check limited"); return; }
+  if (!r || !Object.keys(r).length) { N.unchecked = "RugCheck gave no data"; return; }
   if (r.rugged) F.push("RugCheck marks it as rugged");
   if (r.mintAuthority) F.push("Mint is ON (team can print more coins)");
   if (r.freezeAuthority) F.push("Freeze is ON (team can freeze your coins)");
   const fee = (r.transferFee || {}).pct || 0;
   if (fee > 5) F.push(`Transfer fee ${fee}%`);
+  // Judge the lock on the main pool. pump.fun graduates always have their pool money burned,
+  // so a PumpSwap pool reads 100% by design. Side pools on other exchanges are not locked.
   const markets = r.markets || [];
-  const mk = markets.find(m => m.pubkey === pairAddr) || markets[0];
+  const usd = m => (m.lp || {}).quoteUSD || 0;
+  const mk = markets.find(m => m.pubkey === pairAddr) || markets.find(m => m.marketType === "pump_fun_amm") || markets[0];
   if (mk) {
     const lp = (mk.lp || {}).lpLockedPct || 0;
-    if (lp < 90) F.push(`Only ${lp.toFixed(0)}% of pool money locked`); else N.push(`Pool money ${lp.toFixed(0)}% locked`);
+    if (lp < 90) F.push(`Only ${lp.toFixed(0)}% of pool money locked`);
+    else if (mk.marketType !== "pump_fun_amm") N.push(`Pool money ${lp.toFixed(0)}% locked`);
+    for (const m of markets) {
+      if (m === mk || usd(m) < 20000 || usd(m) < 0.5 * usd(mk)) continue;
+      if (((m.lp || {}).lpLockedPct || 0) < 90) W.push(`Big second pool with no lock: ${money(usd(m))} on ${m.marketType || "another exchange"}`);
+    }
   } else W.push("No graduated pool found: may still be on the pump.fun curve");
   const known = r.knownAccounts || {};
   const supply = (r.token || {}).supply || 0;
@@ -296,8 +346,10 @@ async function solanaSafety(token, pairAddr, F, W, N) {
     if (supply && held) biggest = Math.max(biggest, held / supply * 100);
     bigNet = Math.max(bigNet, n.activeAccounts || n.size || 0);
   }
-  if (biggest > 100) F.push(`Huge linked wallet network (${bigNet} wallets); RugCheck numbers unclear, check the bubble map`);
-  else if (biggest > 10) F.push(`Linked wallet group holds ${biggest.toFixed(1)}%`);
+  // RugCheck's linked-wallet numbers are rough and can exceed 100%. Fail only on big, plausible numbers.
+  if (biggest > 100) W.push(`Linked wallet network of ${bigNet} wallets, RugCheck numbers unclear: check the bubble map`);
+  else if (biggest > 20) F.push(`Linked wallet group holds ${biggest.toFixed(1)}% (RugCheck estimate)`);
+  else if (biggest > 10) W.push(`Linked wallet group may hold ${biggest.toFixed(1)}% (RugCheck estimate, check the bubble map)`);
   else if (bigNet >= 50) W.push(`Linked wallet network of ${bigNet} wallets (often a bundled launch)`);
   else if (biggest >= 5) W.push(`Linked wallet group holds ${biggest.toFixed(1)}%`);
   const cb = r.creatorBalance || 0;
@@ -309,7 +361,7 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   let d;
   try { d = await getJSON(`https://api.gopluslabs.io/api/v1/token_security/${RH_CHAIN_ID}?contract_addresses=${token}`); } catch (e) { d = {}; }
   const r = Object.values(d.result || {})[0];
-  if (!r) { W.push("GoPlus gave no data: safety check limited"); return; }
+  if (!r) { N.unchecked = "GoPlus gave no data"; return; }
   const checks = [
     ["is_mintable", "Mintable (team can print more coins)"], ["owner_change_balance", "Owner can change wallet balances"],
     ["hidden_owner", "Hidden owner"], ["transfer_pausable", "Transfers can be paused"],
@@ -335,12 +387,12 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
   const cp = num(r.creator_percent) * 100;
   if (cp > 5) F.push(`Creator still holds ${cp.toFixed(1)}%`);
+  // GoPlus cannot see Uniswap V4 pools well. Coins launched with Pons keep their pool money in the Pons locker.
   const lps = r.lp_holders || [];
-  if (lps.length) {
-    const locked = sum(lps.filter(x => x.is_locked === 1 || RH_LOCKERS[x.address.toLowerCase()]).map(x => num(x.percent))) * 100;
-    if (locked >= 90) N.push(`Pool money in a known lock: ${locked.toFixed(0)}%`);
-    else W.push(`Pool lock not confirmed (${locked.toFixed(0)}% seen locked; GoPlus may miss the main pool)`);
-  } else W.push("Could not see who controls the pool money");
+  const locked = sum(lps.filter(x => x.is_locked === 1 || RH_LOCKERS[x.address.toLowerCase()]).map(x => num(x.percent))) * 100;
+  if ((r.creator_address || "").toLowerCase() === PONS_DEPLOYER) N.push("Launched with Pons: pool money held by the Pons launch locker (Pons code is unaudited)");
+  else if (locked >= 90) N.push(`Pool money in a known lock: ${locked.toFixed(0)}%`);
+  else W.push("Pool lock unknown: not a Pons launch, and GoPlus cannot see Uniswap V4 pools");
   N.holders = r.holder_count;
 }
 
@@ -375,7 +427,8 @@ async function check(p) {
 
   return {
     symbol: b.symbol, name: b.name, chain, token: b.address,
-    verdict: F.length ? "FAIL" : (W.length ? "PASS WITH WARNINGS" : "PASS"),
+    verdict: F.length ? "FAIL" : N.unchecked ? "NOT CHECKED" : (W.length ? "PASS WITH WARNINGS" : "PASS"),
+    unchecked: N.unchecked || null,
     age_h: Math.round(ageMin / 6) / 10, price, mc, liq, vol24: (p.volume || {}).h24 || 0,
     buys24: tx24.buys || 0, sells24: tx24.sells || 0, chg1: chg.h1 || 0, chg24: chg.h24 || 0,
     holders: N.holders ?? null, fails: F, warns: W, chart: p.url, bubblemap,
@@ -383,34 +436,71 @@ async function check(p) {
   };
 }
 
+// ---------- step 4: what the coin says it is ----------
+const decode = s => { const t = document.createElement("textarea"); t.innerHTML = s || ""; return t.value; };
+function labelFor(desc, categories, hasWebsite) {
+  const text = `${desc} ${(categories || []).join(" ")}`;
+  const cats = (categories || []).map(c => c.toLowerCase());
+  const util = UTIL_WORDS.test(text) || cats.some(c => /defi|ai|infra|gaming|utility|dex/.test(c));
+  const meme = MEME_WORDS.test(text) || cats.includes("meme");
+  if (!desc && !hasWebsite) return "No description";
+  if (util && !meme) return "Says utility (not verified)";
+  if (meme && !util) return "Looks like a meme";
+  if (meme && util) return "Meme with a utility claim";
+  return "Unclear";
+}
+async function addInfo(c, src, say) {
+  let a;
+  try { a = (await getJSONSlow(`${GT}/${src.network}/tokens/${c.token}/info`, say)).data.attributes; }
+  catch (e) { c.desc = ""; c.label = "No description"; return; }
+  c.desc = decode(a.description || "").replace(/\s+/g, " ").trim().slice(0, 280);
+  if (!c.x && a.twitter_handle) c.x = `https://x.com/${a.twitter_handle}`;
+  if (!c.telegram && a.telegram_handle) c.telegram = `https://t.me/${a.telegram_handle}`;
+  if (!c.website && (a.websites || []).length) c.website = a.websites[0];
+  if (!c.image && a.image_url) c.image = a.image_url;
+  if (!c.holders && a.holders && a.holders.count) c.holders = a.holders.count;
+  c.gt_score = a.gt_score ? Math.round(num(a.gt_score)) : null;
+  c.label = labelFor(c.desc, a.categories, !!c.website);
+}
+
 // ---------- the scan ----------
 async function runScan(hours, chains, say, progress, onSource) {
+  scanRun = {stopped: false};
   const result = {hours, started: new Date().toISOString(), sources: []};
-  const totalSteps = chains.reduce((n, k) => n + SOURCES[k].pages + 20, 0);
+  const totalSteps = chains.reduce((n, k) => n + SOURCES[k].feeds(hours).reduce((m, f) => m + f.pages, 0) + 25, 0);
   let step = 0;
   const tick = () => progress(Math.min(0.98, ++step / totalSteps));
   for (const key of chains) {
     const src = SOURCES[key];
-    const pools = await fetchPools(src, m => { say(m); tick(); });
+    const {pools, read, planned} = await fetchPools(src, hours, m => { say(m); tick(); });
     let {keep, dropped} = prefilter(pools, hours, src.limits);
-    keep = keep.sort((a, b) => b.vol24 - a.vol24).slice(0, 20);
+    keep = keep.sort((a, b) => a.ageH - b.ageH).slice(0, 20); // newest first
     say(`${src.label}: ${keep.length} coins left after red-flag filters, running safety checks`);
     step += 20 - keep.length;
     const cards = [];
     for (let i = 0; i < keep.length; i++) {
+      checkStop();
       const k = keep[i];
       say(`${src.label}: safety check ${i + 1} of ${keep.length} (${k.symbol})`);
       try {
         const p = await findPair(k.token, src.dexChain);
         if (p) cards.push(await check(p));
-      } catch (e) { say(`${k.symbol}: check failed`); }
+      } catch (e) { if (scanRun.stopped) throw e; say(`${k.symbol}: check failed`); }
       tick();
       await sleep(1000);
     }
-    const order = {"PASS": 0, "PASS WITH WARNINGS": 1, "FAIL": 2};
-    cards.sort((a, b) => order[a.verdict] - order[b.verdict] || b.liq - a.liq);
-    result.sources.push({key, label: src.label, looked: pools.length, dropped,
-      passed: cards.filter(c => c.verdict !== "FAIL"), failed: cards.filter(c => c.verdict === "FAIL")});
+    const order = {"PASS": 0, "PASS WITH WARNINGS": 1, "NOT CHECKED": 2, "FAIL": 3};
+    cards.sort((a, b) => order[a.verdict] - order[b.verdict] || a.age_h - b.age_h);
+    const passed = cards.filter(c => c.verdict === "PASS" || c.verdict === "PASS WITH WARNINGS");
+    for (let i = 0; i < passed.length; i++) {
+      checkStop();
+      say(`${src.label}: reading description ${i + 1} of ${passed.length} (${passed[i].symbol})`);
+      await addInfo(passed[i], src, say);
+      tick();
+      await sleep(4000);
+    }
+    result.sources.push({key, label: src.label, looked: pools.length, pagesRead: read, pagesPlanned: planned, dropped,
+      passed, unchecked: cards.filter(c => c.verdict === "NOT CHECKED"), failed: cards.filter(c => c.verdict === "FAIL")});
     onSource(result);
   }
   result.finished = new Date().toISOString();
@@ -444,11 +534,17 @@ function cardHtml(c, srcKey) {
     : `<span class="badge b-warn">PASS + ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
   const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : `<span class="badge b-rh">Robinhood</span>`;
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
+  const labelClass = /utility/.test(c.label || "") && !/meme/i.test(c.label || "") ? "l-util" : /meme/i.test(c.label || "") ? "l-meme" : "l-none";
+  const about = `<div class="about">
+      <span class="lbl ${labelClass}">${esc(c.label || "Not read")}</span>${c.gt_score ? `<span class="lbl l-none" title="GeckoTerminal trust score">GT score ${c.gt_score}</span>` : ""}
+      <p>${c.desc ? esc(c.desc) : "<i>The creator wrote no description.</i>"}</p>
+    </div>`;
   return `<article class="card">
     <div class="top">${img}
       <div class="title"><div class="sym">${esc(c.symbol)}</div><div class="name">${esc(c.name)}</div></div>
       <div class="badges">${verdict}${chain}</div>
     </div>
+    ${about}
     <div class="stats">
       <div class="stat"><b>${money(c.mc)}</b><span>Market cap</span></div>
       <div class="stat"><b>${money(c.liq)}</b><span>Pool</span></div>
@@ -481,19 +577,21 @@ function render() {
   document.querySelectorAll("button.scan").forEach(b => b.classList.toggle("last", Number(b.dataset.h) === r.hours));
   $("#summary").innerHTML = r.sources.map(s => `<div class="panel">
       <h3>${esc(s.label)}: ${s.passed.length} passed</h3>
-      <div class="sub">Looked at ${s.looked} pools. ${s.failed.length} failed the safety check.</div>
+      <div class="sub">Looked at ${s.looked} pools${s.pagesRead < s.pagesPlanned ? ` (only ${s.pagesRead} of ${s.pagesPlanned} list pages, the data site slowed us down)` : ""}. ${s.failed.length} failed the safety check${(s.unchecked || []).length ? `, ${s.unchecked.length} could not be checked` : ""}.</div>
       <ul>${s.dropped.map(([why, n]) => `<li>${n} dropped: ${esc(why)}</li>`).join("")}</ul>
     </div>`).join("");
   let cards = [];
   r.sources.forEach(s => s.passed.forEach(c => cards.push([c, s.key])));
   cards = cards.filter(([c, k]) => filter === "all" || filter === k ||
-    (filter === "clean" && c.verdict === "PASS") || (filter === "social" && (safeUrl(c.x) || safeUrl(c.telegram))));
+    (filter === "clean" && c.verdict === "PASS") || (filter === "social" && (safeUrl(c.x) || safeUrl(c.telegram))) ||
+    (filter === "utility" && /utility/.test(c.label || "")));
   $("#grid").innerHTML = cards.length ? cards.map(([c, k]) => cardHtml(c, k)).join("")
     : `<div class="empty">${r.finished ? "No coins match this filter." : "Coins will show here as each source finishes."}</div>`;
-  const failed = r.sources.flatMap(s => s.failed.map(c => [c, s.label]));
-  $("#failed").innerHTML = failed.length ? `<details><summary>Failed safety (${failed.length})</summary><ul>
-      ${failed.map(([c, l]) => `<li><b>${esc(c.symbol)}</b> <span class="sub">${esc(l)}</span>: <span class="why">${esc(c.fails.join("; "))}</span> ${safeUrl(c.chart) ? `<a href="${esc(c.chart)}" target="_blank" rel="noopener noreferrer">chart</a>` : ""}</li>`).join("")}
+  const list = (items, title, why) => items.length ? `<details><summary>${title} (${items.length})</summary><ul>
+      ${items.map(([c, l]) => `<li><b>${esc(c.symbol)}</b> <span class="sub">${esc(l)}</span>: <span class="why">${esc(why(c))}</span> ${safeUrl(c.chart) ? `<a href="${esc(c.chart)}" target="_blank" rel="noopener noreferrer">chart</a>` : ""}</li>`).join("")}
     </ul></details>` : "";
+  $("#unchecked").innerHTML = list(r.sources.flatMap(s => (s.unchecked || []).map(c => [c, s.label])), "Could not be checked", c => c.unchecked + ". Not safe to treat as a pass.");
+  $("#failed").innerHTML = list(r.sources.flatMap(s => s.failed.map(c => [c, s.label])), "Failed safety", c => c.fails.join("; "));
   document.querySelectorAll("img.logo").forEach(img => img.onerror = () => {
     const d = document.createElement("div"); d.className = "logo"; d.textContent = img.dataset.initials; img.replaceWith(d);
   });
@@ -523,9 +621,11 @@ document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
     const passed = res.sources.reduce((n, s) => n + s.passed.length, 0);
     $("#statustext").textContent = `Scan finished: ${passed} coin${passed === 1 ? "" : "s"} passed.`;
   } catch (e) {
-    $("#statustext").textContent = "Scan stopped: " + e.message + ". Try again in a minute.";
+    $("#statustext").textContent = scanRun.stopped ? "Scan stopped. The coins already checked stay on screen." : "Scan stopped: " + e.message + ". Try again in a minute.";
+    if (data) { data.finished = new Date().toISOString(); render(); }
   } finally { setRunning(false); }
 });
+$("#stop").onclick = () => { scanRun.stopped = true; $("#statustext").textContent = "Stopping after the current step..."; };
 
 document.querySelectorAll("#filters button").forEach(b => b.onclick = () => {
   filter = b.dataset.f;

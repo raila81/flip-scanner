@@ -198,6 +198,7 @@ table.track{min-width:980px}
           <span class="label">Sources</span>
           <label class="src"><input type="checkbox" value="pumpfun" checked> pump.fun</label>
           <label class="src"><input type="checkbox" value="robinhood" checked> Robinhood</label>
+          <label class="src" title="Small Solana pools from $3K that just started moving. Paper bets of $100."><input type="checkbox" value="movers" checked> Movers</label>
           <label class="src" title="After each scan, re-check the open paper positions so the portfolio is current"><input type="checkbox" id="autocheck" checked> Update portfolio after scan</label>
         </div>
         <div class="bar"><i id="barfill"></i></div>
@@ -216,6 +217,7 @@ table.track{min-width:980px}
       <button data-f="all" class="on">All</button>
       <button data-f="pumpfun">pump.fun</button>
       <button data-f="robinhood">Robinhood</button>
+      <button data-f="movers">Movers</button>
       <button data-f="clean">No warnings only</button>
       <button data-f="social">Has X or Telegram</button>
       <button data-f="utility">Says utility</button>
@@ -248,7 +250,7 @@ table.track{min-width:980px}
     </div>
     <h2>Which rule works?</h2>
     <div class="twrap"><table class="baskets" id="baskets"></table></div>
-    <p class="tsub">Pretend you put $250 into every coin the moment it passed a scan, then sold on the plan: half at 2x, the rest at 3x, everything at -33%. Costs of 3% per round trip are taken off. Each row is a different rule for which coins to buy.</p>
+    <p class="tsub">Pretend you put $250 into every coin the moment it passed a scan ($100 for Movers, their pools are tiny), then sold on the plan: half at 2x, the rest at 3x, everything at -33%. Costs of 3% per round trip are taken off. Each row is a different rule for which coins to buy.</p>
     <h2>Every trade</h2>
     <div class="twrap"><table class="track" id="tracktable"></table></div>
     <p class="tsub">"Check results" replays the price since each scan with 15-minute candles. If 2x and the stop land in the same candle, the stop counts first. The record lives in this browser only. Use Export to move it to another device, and export now and then as a backup.</p>
@@ -283,7 +285,18 @@ const SOURCES = {
     ],
     limits: {minLiq: 10000, maxFdv: 5e6, minTx24: 50, minSells24: 30, minSells1: 1, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10},
   },
+  // Movers: small pools on any Solana exchange that just started moving. Catches sleepers once they wake.
+  movers: {
+    label: "Movers (small pools, Solana)", network: "solana", dexChain: "solana",
+    feeds: () => [
+      {name: "trending 5m", pages: 1, url: () => `${GT}/solana/trending_pools?duration=5m&page=1`},
+      {name: "trending 1h", pages: 1, url: () => `${GT}/solana/trending_pools?duration=1h&page=1`},
+      {name: "trending 6h", pages: 1, url: () => `${GT}/solana/trending_pools?duration=6h&page=1`},
+    ],
+    limits: {minLiq: 3000, maxFdv: 5e6, minTx24: 50, minSells24: 50, minSells1: 5, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10, maxAge: 168},
+  },
 };
+const PAPER_BY = {pumpfun: 250, robinhood: 250, movers: 100};
 const PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"; // Pons launch tool on Robinhood Chain
 const UTIL_WORDS = /\b(app|platform|protocol|sdk|api|agent|agents|ai|infra|infrastructure|launchpad|dex|swap|wallet|bot|tool|tools|network|compute|gpu|defi|lending|staking|revenue|buy-?back|burn|fees?|dashboard|browser|game|marketplace|payments?|data|trading|terminal|server)\b/i;
 const MEME_WORDS = /\b(meme|memecoin|dog|doge|cat|kitten|pepe|frog|inu|shib|moon|wif|hat|vibes?|community|lol|cult|based|degen|pump it|to the moon|just a|no utility|for fun|chad|wojak|ape|monkey|bonk|fart|squirrel|hamster|penguin|duck|goat|mascot|ticker is)\b/i;
@@ -374,10 +387,11 @@ async function fetchPools(src, hours, say) {
 // ---------- step 2: red-flag filters ----------
 function prefilter(pools, hours, L) {
   const now = Date.now();
+  const window = L.maxAge || hours;
   const recent = [];
   for (const p of pools) {
     const ageH = (now - Date.parse(p.attributes.pool_created_at)) / 3.6e6;
-    if (ageH <= Math.max(48, hours)) recent.push([p, ageH]);
+    if (ageH <= Math.max(48, window)) recent.push([p, ageH]);
   }
   const symCount = {};
   for (const [p] of recent) { const s = p.attributes.name.split(" / ")[0].trim().toLowerCase(); symCount[s] = (symCount[s] || 0) + 1; }
@@ -394,7 +408,7 @@ function prefilter(pools, hours, L) {
     const chg24 = num((a.price_change_percentage || {}).h24);
     let reason = null;
     if (NOT_NEW.has(sym.toLowerCase())) reason = "money or stock token, not a new coin";
-    else if (ageH < 1 || ageH > hours) reason = "outside time window";
+    else if (ageH < 1 || ageH > window) reason = "outside time window";
     else if (liq < L.minLiq) reason = `pool under $${L.minLiq / 1000}K`;
     else if (fdv > L.maxFdv) reason = "market cap over $5M";
     else if (buys24 + sells24 < L.minTx24 || sells24 < L.minSells24 || sells1 < L.minSells1) reason = "too few sells (maybe can't sell)";
@@ -679,7 +693,7 @@ function cardHtml(c, srcKey) {
   const img = safeUrl(c.image) ? `<img class="logo" src="${esc(c.image)}" alt="" data-initials="${initials}">` : `<div class="logo">${initials}</div>`;
   const verdict = c.verdict === "PASS" ? `<span class="badge b-pass">Pass</span>`
     : `<span class="badge b-warn">Pass, ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
-  const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : `<span class="badge b-rh">Robinhood</span>`;
+  const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : srcKey === "movers" ? `<span class="badge b-sol">Mover</span>` : `<span class="badge b-rh">Robinhood</span>`;
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
   const tot = (c.buys24 || 0) + (c.sells24 || 0);
   const buyShare = tot ? c.buys24 / tot * 100 : 50;
@@ -814,7 +828,7 @@ function logPassed(res) {
     const b = c.big || {};
     track[c.token] = {
       token: c.token, pair: c.pair, chain: c.chain, source: s.key, symbol: c.symbol, name: c.name,
-      label: c.label || "", warns: c.warns.length, logged: res.finished || new Date().toISOString(),
+      label: c.label || "", warns: c.warns.length, logged: res.finished || new Date().toISOString(), size: PAPER_BY[s.key] || PAPER,
       price0: c.price, liq0: c.liq, mc0: c.mc, chart: c.chart,
       // Snapshot at scan time. This is what later learning runs on: which numbers went with 2x, which with the stop.
       features: {
@@ -856,8 +870,9 @@ function planResult(e) {
   if (e.outcome === "Dead") return 0;
   return e.now && e.price0 ? e.now / e.price0 : 1;
 }
-const positionValue = e => e.checked ? PAPER * planResult(e) * (1 - COST) : PAPER;
-const tradePnl = e => positionValue(e) - PAPER;
+const sizeOf = e => e.size || PAPER;
+const positionValue = e => e.checked ? sizeOf(e) * planResult(e) * (1 - COST) : sizeOf(e);
+const tradePnl = e => positionValue(e) - sizeOf(e);
 const exitTime = e => e.exit ? e.exit * 1000 : null;
 
 async function checkResults(quiet) {
@@ -909,6 +924,7 @@ const BASKETS = [
   ["No warnings only", e => e.warns === 0],
   ["pump.fun only", e => e.source === "pumpfun"],
   ["Robinhood only", e => e.source === "robinhood"],
+  ["Movers only ($100 bets)", e => e.source === "movers"],
   ["Says utility only", e => /utility/.test(e.label || "")],
   ["Whale buy seen", e => !!(e.features || {}).whale],
   ["Big buys beat big sells", e => (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
@@ -918,7 +934,7 @@ const BASKETS = [
   ["Pool at least 10% of market cap", e => ((e.features || {}).liqToMc || 0) >= 10],
 ];
 function portfolio(es) {
-  const invested = es.length * PAPER, value = sum(es.map(positionValue));
+  const invested = sum(es.map(sizeOf)), value = sum(es.map(positionValue));
   return {n: es.length, invested, value, pnl: value - invested, pct: invested ? (value / invested - 1) * 100 : 0,
     closed: es.filter(e => e.final).length, open: es.filter(e => !e.final).length, unchecked: es.filter(e => !e.checked).length};
 }
@@ -961,7 +977,7 @@ function renderTrack() {
   updateTrackCount(); renderPaper();
   const p = portfolio(es);
   countUp($("#heroValue"), p.value, v => money(v));
-  $("#heroPl").innerHTML = es.length ? `<span class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</span> <span class="tsub">on ${money(p.invested)} put in</span>` : "Run a scan. Every coin that passes becomes a $250 paper trade.";
+  $("#heroPl").innerHTML = es.length ? `<span class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</span> <span class="tsub">on ${money(p.invested)} put in</span>` : "Every coin that passes a scan becomes a paper trade. The hourly scan on GitHub fills this by itself.";
   $("#heroSub").textContent = es.length ? `${p.n} trades: ${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} not checked yet` : ""}` : "";
   drawCurve(es);
   const closed = es.filter(e => e.final && e.checked);
@@ -999,11 +1015,11 @@ function renderTrack() {
       return `<tr>
       <td>${when(e.logged)}</td>
       <td><b>${esc(e.symbol)}</b> <span class="tsub">${esc(e.name)}</span></td>
-      <td>${e.source === "pumpfun" ? "pump.fun" : "Robinhood"}</td>
+      <td>${e.source === "pumpfun" ? "pump.fun" : e.source === "movers" ? "Mover" : "Robinhood"}</td>
       <td>${esc(e.label || "-")}</td>
       <td class="num">${e.warns}</td>
       <td class="num">${money(e.price0)}</td>
-      <td class="num">$${PAPER}</td>
+      <td class="num">$${sizeOf(e)}</td>
       <td class="num">${e.now === null ? "-" : x(e.now / e.price0)}</td>
       <td class="num">${x(e.best)}</td>
       <td class="${cls(e.outcome)}">${esc(e.outcome)}${e.final ? "" : e.checked ? " (so far)" : ""}</td>
@@ -1039,6 +1055,33 @@ try { $("#autocheck").checked = localStorage.getItem("flipAuto") !== "off"; } ca
 $("#autocheck").onchange = () => { try { localStorage.setItem("flipAuto", $("#autocheck").checked ? "on" : "off"); } catch (e) {} };
 try { const saved = localStorage.getItem("flipLastScan"); if (saved) data = JSON.parse(saved); } catch (e) {}
 render(); updateTrackCount(); renderPaper();
+
+// ---------- results from the hourly scan on GitHub ----------
+// data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
+// The repo's track record is the shared truth; trades made by hand in this browser are merged in.
+async function loadAuto() {
+  if (location.protocol === "file:") return;
+  const bust = "?t=" + Math.floor(Date.now() / 300000);
+  try {
+    const repo = await getJSON("data/track.json" + bust);
+    let merged = 0;
+    for (const [k, v] of Object.entries(repo)) {
+      const mine = track[k];
+      if (!mine || Date.parse(v.checked || 0) >= Date.parse(mine.checked || 0)) { track[k] = v; merged++; }
+    }
+    if (merged) { saveTrack(); renderPaper(); if (document.body.classList.contains("view-track")) renderTrack(); }
+  } catch (e) { /* no automatic record yet */ }
+  try {
+    const latest = await getJSON("data/latest.json" + bust);
+    if (latest && latest.finished && (!data || !data.finished || Date.parse(latest.finished) > Date.parse(data.finished)) && !running) {
+      data = latest; render();
+      $("#lastinfo").textContent = `Automatic scan (GitHub): ${latest.hours}h window, finished ${ago(latest.finished)}. Next one within the hour.`;
+      try { localStorage.setItem("flipLastScan", JSON.stringify(latest)); } catch (e) {}
+    }
+  } catch (e) { /* no automatic scan yet */ }
+}
+loadAuto();
+setInterval(loadAuto, 5 * 60 * 1000);
 </script>
 </body>
 </html>

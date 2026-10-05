@@ -87,6 +87,26 @@ label.src{display:flex;gap:6px;align-items:center;background:var(--chip);padding
 .note{font-size:12.5px;color:var(--muted);margin:14px 0 0;padding:10px 12px;border:1px dashed var(--line);border-radius:10px}
 button.stop{border:1px solid var(--fail);background:transparent;color:var(--fail);font-weight:600;padding:9px 14px;border-radius:10px;cursor:pointer;font-size:14px;display:none}
 .running button.stop{display:inline-block}
+.views{display:flex;gap:8px;margin:20px 0 0}
+.views button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 14px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600}
+.views button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+#track{display:none} body.view-track #track{display:block} body.view-track #scanview{display:none}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+.tile b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+.tile span{font-size:12px;color:var(--muted)}
+.tbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}
+.tbar button,.tbar label{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 12px;border-radius:10px;cursor:pointer;font-size:13px}
+.tbar button.main{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.tbar button:disabled{opacity:.45;cursor:not-allowed}
+.tbar input[type=file]{display:none}
+.twrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px}
+table.track{border-collapse:collapse;width:100%;font-size:13px;min-width:760px}
+table.track th,table.track td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+table.track th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+table.track td.num{font-variant-numeric:tabular-nums;text-align:right}
+.o-win{color:var(--pass);font-weight:700} .o-loss{color:var(--fail);font-weight:700} .o-open{color:var(--muted)}
+.tsub{font-size:12.5px;color:var(--muted);margin:8px 0 0}
 .plan{border:1px dashed var(--line);border-radius:10px;padding:8px 10px;font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}
 .plan .h{grid-column:1/-1;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:2px}
 .plan b{font-variant-numeric:tabular-nums}
@@ -132,6 +152,12 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
     <div class="status"><span class="spin"></span><span id="statustext">Pick a time window to start a scan. A scan takes about 2 to 3 minutes. Keep this tab open while it runs.</span></div>
   </section>
 
+  <div class="views">
+    <button data-view="scan" class="on">Latest scan</button>
+    <button data-view="track">Track record <span id="trackcount"></span></button>
+  </div>
+
+  <div id="scanview">
   <div class="filters" id="filters">
     <button data-f="all" class="on">All</button>
     <button data-f="pumpfun">pump.fun</button>
@@ -146,6 +172,20 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
   <div class="failed" id="unchecked"></div>
   <div class="failed" id="failed"></div>
   <p class="note">The description, website, X and Telegram links come from the coin's own listing. Anyone can write anything there, and the links can lead to scam sites. Never connect a wallet on a site you reached from this page. The utility or meme label is a rough guess from that text, not a verdict.</p>
+  </div>
+
+  <div id="track">
+    <div class="tiles" id="tiles"></div>
+    <div class="tbar">
+      <button class="main" id="checkbtn" type="button">Check results</button>
+      <button id="exportbtn" type="button">Export</button>
+      <label for="importfile">Import</label><input type="file" id="importfile" accept="application/json">
+      <button id="clearbtn" type="button">Clear all</button>
+      <span class="tsub" id="trackstatus"></span>
+    </div>
+    <div class="twrap"><table class="track" id="tracktable"></table></div>
+    <p class="tsub">Every coin that passes a scan is logged here with its price at that moment. "Check results" replays the price since then and asks: did the flip plan (half at 2x, rest at 3x, stop at -33%) hit 2x first, or the stop first? The record lives in this browser only. Use Export to move it to another device.</p>
+  </div>
 
   <footer>Safety scan only. A pass means no traps were found, not that the price will go up. Not financial advice.</footer>
 </div>
@@ -426,7 +466,7 @@ async function check(p) {
   if ((info.websites || []).length) soc.website = info.websites[0].url;
 
   return {
-    symbol: b.symbol, name: b.name, chain, token: b.address,
+    symbol: b.symbol, name: b.name, chain, token: b.address, pair: p.pairAddress,
     verdict: F.length ? "FAIL" : N.unchecked ? "NOT CHECKED" : (W.length ? "PASS WITH WARNINGS" : "PASS"),
     unchecked: N.unchecked || null,
     age_h: Math.round(ageMin / 6) / 10, price, mc, liq, vol24: (p.volume || {}).h24 || 0,
@@ -619,7 +659,8 @@ document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
     data = res; render();
     try { localStorage.setItem("flipLastScan", JSON.stringify(res)); } catch (e) {}
     const passed = res.sources.reduce((n, s) => n + s.passed.length, 0);
-    $("#statustext").textContent = `Scan finished: ${passed} coin${passed === 1 ? "" : "s"} passed.`;
+    const added = logPassed(res);
+    $("#statustext").textContent = `Scan finished: ${passed} coin${passed === 1 ? "" : "s"} passed. ${added} new coin${added === 1 ? "" : "s"} added to the track record.`;
   } catch (e) {
     $("#statustext").textContent = scanRun.stopped ? "Scan stopped. The coins already checked stay on screen." : "Scan stopped: " + e.message + ". Try again in a minute.";
     if (data) { data.finished = new Date().toISOString(); render(); }
@@ -641,8 +682,155 @@ document.addEventListener("click", e => {
 
 window.addEventListener("beforeunload", e => { if (running) { e.preventDefault(); e.returnValue = ""; } });
 
+// ---------- track record ----------
+// One entry per coin: price at the first scan it passed, then what happened since.
+const STOP = 0.67;
+let track = {};
+try { track = JSON.parse(localStorage.getItem("flipTrack") || "{}"); } catch (e) { track = {}; }
+function saveTrack() { try { localStorage.setItem("flipTrack", JSON.stringify(track)); } catch (e) {} updateTrackCount(); }
+function updateTrackCount() { const n = Object.keys(track).length; $("#trackcount").textContent = n ? `(${n})` : ""; }
+
+function logPassed(res) {
+  let added = 0;
+  for (const s of res.sources) for (const c of s.passed) {
+    if (track[c.token] || !c.price) continue;
+    track[c.token] = {
+      token: c.token, pair: c.pair, chain: c.chain, source: s.key, symbol: c.symbol, name: c.name,
+      label: c.label || "", warns: c.warns.length, logged: res.finished || new Date().toISOString(),
+      price0: c.price, liq0: c.liq, mc0: c.mc, chart: c.chart,
+      now: null, liq: null, best: null, outcome: "Open", final: false, checked: null,
+    };
+    added++;
+  }
+  if (added) saveTrack();
+  return added;
+}
+
+// Replay candles since the scan. Conservative: if 2x and the stop land in the same candle, the stop counts first.
+function replay(candles, price0) {
+  const stop = price0 * STOP, x2 = price0 * 2, x3 = price0 * 3;
+  let best = 0, hit2 = false, hit3 = false, stopped = false;
+  for (const [, , high, low] of candles) {
+    best = Math.max(best, high / price0);
+    if (!hit2 && !stopped) {
+      if (low <= stop) { stopped = true; break; }
+      if (high >= x2) hit2 = true;
+    }
+    if (hit2 && high >= x3) { hit3 = true; break; }
+  }
+  return {best, hit2, hit3, stopped};
+}
+
+function planResult(e) {
+  // What the plan would have made, as a multiple of the money put in.
+  if (e.outcome === "Stop hit") return STOP;
+  if (e.outcome === "3x hit") return 0.5 * 2 + 0.5 * 3;
+  if (e.outcome === "2x hit") return 0.5 * 2 + 0.5 * (e.now && e.price0 ? Math.max(e.now / e.price0, 0) : 1);
+  if (e.outcome === "Dead") return 0;
+  return e.now && e.price0 ? e.now / e.price0 : 1;
+}
+
+async function checkResults() {
+  const entries = Object.values(track);
+  if (!entries.length) return;
+  const btn = $("#checkbtn"); btn.disabled = true;
+  const say = m => $("#trackstatus").textContent = m;
+  try {
+    const todo = entries.filter(e => !e.final);
+    for (let i = 0; i < todo.length; i++) {
+      const e = todo[i];
+      say(`Checking ${i + 1} of ${todo.length} (${e.symbol})`);
+      // Where is the price now?
+      try {
+        const pairs = await getJSON(`https://api.dexscreener.com/token-pairs/v1/${e.chain}/${e.token}`);
+        const p = Array.isArray(pairs) && pairs.length ? pairs.reduce((a, b) => (((b.liquidity || {}).usd || 0) > ((a.liquidity || {}).usd || 0) ? b : a)) : null;
+        if (p) { e.now = num(p.priceUsd); e.liq = (p.liquidity || {}).usd || 0; } else { e.now = 0; e.liq = 0; }
+      } catch (err) { /* keep old numbers */ }
+      // What did the price do since the scan?
+      const ageDays = (Date.now() - Date.parse(e.logged)) / 864e5;
+      const net = e.chain === "solana" ? "solana" : "robinhood";
+      const tf = ageDays <= 10 ? "minute?aggregate=15&limit=1000" : "hour?limit=1000";
+      try {
+        const d = await getJSONSlow(`${GT}/${net}/pools/${e.pair}/ohlcv/${tf}`, say);
+        const since = Date.parse(e.logged) / 1000;
+        const candles = ((d.data || {}).attributes || {}).ohlcv_list || [];
+        const after = candles.filter(c => c[0] >= since - 900).sort((a, b) => a[0] - b[0]);
+        if (after.length) {
+          const r = replay(after, e.price0);
+          e.best = r.best;
+          e.outcome = r.hit3 ? "3x hit" : r.hit2 ? "2x hit" : r.stopped ? "Stop hit" : "Open";
+        }
+      } catch (err) { say(`${e.symbol}: no candles yet`); }
+      if (e.outcome === "Open" && ((e.liq !== null && e.liq < 1000) || (e.now !== null && e.price0 && e.now / e.price0 < 0.1))) e.outcome = "Dead";
+      if (e.outcome === "3x hit" || e.outcome === "Stop hit" || e.outcome === "Dead" || ageDays > 14) e.final = true;
+      e.checked = new Date().toISOString();
+      saveTrack(); renderTrack();
+      await sleep(PAUSE);
+    }
+    say(todo.length ? "Results updated." : "Nothing left to check: every coin has a final result.");
+  } catch (err) {
+    say("Check stopped: " + err.message);
+  } finally { btn.disabled = false; }
+}
+
+function renderTrack() {
+  const es = Object.values(track).sort((a, b) => Date.parse(b.logged) - Date.parse(a.logged));
+  updateTrackCount();
+  const checked = es.filter(e => e.checked);
+  const wins = checked.filter(e => e.outcome === "2x hit" || e.outcome === "3x hit").length;
+  const stops = checked.filter(e => e.outcome === "Stop hit" || e.outcome === "Dead").length;
+  const avg = checked.length ? checked.reduce((n, e) => n + planResult(e), 0) / checked.length : null;
+  const pctOf = n => checked.length ? Math.round(n / checked.length * 100) + "%" : "-";
+  $("#tiles").innerHTML = `
+    <div class="tile"><b>${es.length}</b><span>Coins logged</span></div>
+    <div class="tile"><b>${checked.length}</b><span>Checked</span></div>
+    <div class="tile"><b class="${wins ? "o-win" : ""}">${pctOf(wins)}</b><span>Hit 2x before the stop</span></div>
+    <div class="tile"><b class="${stops ? "o-loss" : ""}">${pctOf(stops)}</b><span>Stop hit or dead</span></div>
+    <div class="tile"><b>${avg === null ? "-" : (avg >= 1 ? "+" : "") + Math.round((avg - 1) * 100) + "%"}</b><span>Plan result, average</span></div>`;
+  if (!es.length) { $("#tracktable").innerHTML = `<tr><td class="empty">No coins logged yet. Run a scan: every coin that passes gets logged.</td></tr>`; return; }
+  const cls = o => o === "2x hit" || o === "3x hit" ? "o-win" : o === "Stop hit" || o === "Dead" ? "o-loss" : "o-open";
+  const x = v => v === null || v === undefined ? "-" : v.toFixed(2) + "x";
+  $("#tracktable").innerHTML = `<tr><th>Logged</th><th>Coin</th><th>Source</th><th>Label</th><th>Warnings</th><th>Price then</th><th>Now</th><th>Best since</th><th>Outcome</th><th>Plan</th><th></th></tr>` +
+    es.map(e => `<tr>
+      <td>${new Date(e.logged).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"})}</td>
+      <td><b>${esc(e.symbol)}</b> <span class="sub">${esc(e.name)}</span></td>
+      <td>${e.source === "pumpfun" ? "pump.fun" : "Robinhood"}</td>
+      <td>${esc(e.label || "-")}</td>
+      <td class="num">${e.warns}</td>
+      <td class="num">${money(e.price0)}</td>
+      <td class="num">${e.now === null ? "-" : x(e.now / e.price0)}</td>
+      <td class="num">${x(e.best)}</td>
+      <td class="${cls(e.outcome)}">${esc(e.outcome)}${e.final ? "" : e.checked ? " (so far)" : ""}</td>
+      <td class="num">${e.checked ? (planResult(e) >= 1 ? "+" : "") + Math.round((planResult(e) - 1) * 100) + "%" : "-"}</td>
+      <td>${safeUrl(e.chart) ? `<a href="${esc(e.chart)}" target="_blank" rel="noopener noreferrer">chart</a>` : ""}</td>
+    </tr>`).join("");
+}
+
+$("#checkbtn").onclick = checkResults;
+$("#exportbtn").onclick = () => {
+  const blob = new Blob([JSON.stringify({exported: new Date().toISOString(), track}, null, 1)], {type: "application/json"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+  a.download = `flip-track-record-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(a.href);
+};
+$("#importfile").onchange = async ev => {
+  const f = ev.target.files[0]; if (!f) return;
+  try {
+    const j = JSON.parse(await f.text()); const inc = j.track || j; let n = 0;
+    for (const [k, v] of Object.entries(inc)) if (v && v.token && v.price0 && !track[k]) { track[k] = v; n++; }
+    saveTrack(); renderTrack(); $("#trackstatus").textContent = `Imported ${n} new coin${n === 1 ? "" : "s"}.`;
+  } catch (e) { $("#trackstatus").textContent = "That file could not be read."; }
+  ev.target.value = "";
+};
+$("#clearbtn").onclick = () => { if (confirm("Delete the whole track record on this device?")) { track = {}; saveTrack(); renderTrack(); } };
+
+document.querySelectorAll(".views button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".views button").forEach(x => x.classList.toggle("on", x === b));
+  document.body.classList.toggle("view-track", b.dataset.view === "track");
+  if (b.dataset.view === "track") renderTrack();
+});
+
 try { const saved = localStorage.getItem("flipLastScan"); if (saved) data = JSON.parse(saved); } catch (e) {}
-render();
+render(); updateTrackCount();
 </script>
 </body>
 </html>

@@ -82,6 +82,16 @@ label.src{display:flex;gap:6px;align-items:center;background:var(--chip);padding
 .links span{opacity:.45;cursor:default;text-decoration:line-through}
 .warns{margin:0;padding:8px 10px 8px 26px;background:var(--warn-bg);color:var(--warn);border-radius:8px;font-size:12.5px}
 .about p{margin:6px 0 0;font-size:13px;color:var(--muted);line-height:1.4}
+.big{font-size:12.5px;color:var(--muted);background:var(--bg);border-radius:8px;padding:8px 10px;line-height:1.45}
+.big .h{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
+.paper{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin-top:14px;font-size:13.5px}
+.paper b{font-variant-numeric:tabular-nums}
+.paper .h{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);width:100%}
+table.baskets{border-collapse:collapse;width:100%;font-size:13px}
+table.baskets th,table.baskets td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line)}
+table.baskets th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+table.baskets td.num{text-align:right;font-variant-numeric:tabular-nums}
+h2{font-size:16px;margin:22px 0 8px}
 .lbl{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;margin-right:6px}
 .l-util{background:var(--pass-bg);color:var(--pass)} .l-meme{background:var(--warn-bg);color:var(--warn)} .l-none{background:var(--chip);color:var(--muted)}
 .note{font-size:12.5px;color:var(--muted);margin:14px 0 0;padding:10px 12px;border:1px dashed var(--line);border-radius:10px}
@@ -146,10 +156,12 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
         <span class="label">Sources</span>
         <label class="src"><input type="checkbox" value="pumpfun" checked> pump.fun</label>
         <label class="src"><input type="checkbox" value="robinhood" checked> Robinhood</label>
+        <label class="src" title="After each scan, re-check the open paper positions so the portfolio line is current"><input type="checkbox" id="autocheck" checked> Update portfolio after scan</label>
       </div>
     </div>
     <div class="bar"><i id="barfill"></i></div>
-    <div class="status"><span class="spin"></span><span id="statustext">Pick a time window to start a scan. A scan takes about 2 to 3 minutes. Keep this tab open while it runs.</span></div>
+    <div class="status"><span class="spin"></span><span id="statustext">Pick a time window to start a scan. A scan takes about 3 to 5 minutes. Keep this tab open while it runs.</span></div>
+    <div class="paper" id="paper"></div>
   </section>
 
   <div class="views">
@@ -175,6 +187,11 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
   </div>
 
   <div id="track">
+    <h2>Paper portfolio</h2>
+    <div class="tiles" id="ptiles"></div>
+    <div class="twrap"><table class="baskets" id="baskets"></table></div>
+    <p class="tsub">Pretend you put $250 into every coin the moment it passed a scan, and sold on the plan: half at 2x, the rest at 3x, all of it at -33%. Costs of 3% per round trip are taken off. Each row is a different rule for which coins to buy, so you can see which rule actually works.</p>
+    <h2>Outcomes</h2>
     <div class="tiles" id="tiles"></div>
     <div class="tbar">
       <button class="main" id="checkbtn" type="button">Check results</button>
@@ -489,6 +506,27 @@ function labelFor(desc, categories, hasWebsite) {
   if (meme && util) return "Meme with a utility claim";
   return "Unclear";
 }
+// Big trades (over $1K) in the last 24h, with the wallets behind them.
+async function addBigTrades(c, src, say) {
+  c.big = null;
+  if (!c.pair) return;
+  let d;
+  try { d = await getJSONSlow(`${GT}/${src.network}/pools/${c.pair}/trades?trade_volume_in_usd_greater_than=1000`, say); }
+  catch (e) { return; }
+  const since = Date.now() - 864e5;
+  const big = {buys: 0, buyUsd: 0, sells: 0, sellUsd: 0, wallets: new Set(), top: null};
+  for (const t of d.data || []) {
+    const a = t.attributes || {};
+    if (Date.parse(a.block_timestamp) < since) continue;
+    const usd = num(a.volume_in_usd), kind = a.kind === "buy" ? "buy" : "sell";
+    if (kind === "buy") { big.buys++; big.buyUsd += usd; } else { big.sells++; big.sellUsd += usd; }
+    if (a.tx_from_address) big.wallets.add(a.tx_from_address);
+    if (!big.top || usd > big.top.usd) big.top = {usd, kind, wallet: a.tx_from_address || "", time: a.block_timestamp};
+  }
+  big.wallets = big.wallets.size;
+  c.big = big;
+}
+
 async function addInfo(c, src, say) {
   let a;
   try { a = (await getJSONSlow(`${GT}/${src.network}/tokens/${c.token}/info`, say)).data.attributes; }
@@ -536,8 +574,12 @@ async function runScan(hours, chains, say, progress, onSource) {
       checkStop();
       say(`${src.label}: reading description ${i + 1} of ${passed.length} (${passed[i].symbol})`);
       await addInfo(passed[i], src, say);
+      await sleep(PAUSE);
+      checkStop();
+      say(`${src.label}: reading big trades ${i + 1} of ${passed.length} (${passed[i].symbol})`);
+      await addBigTrades(passed[i], src, say);
       tick();
-      await sleep(4000);
+      await sleep(PAUSE);
     }
     result.sources.push({key, label: src.label, looked: pools.length, pagesRead: read, pagesPlanned: planned, dropped,
       passed, unchecked: cards.filter(c => c.verdict === "NOT CHECKED"), failed: cards.filter(c => c.verdict === "FAIL")});
@@ -574,6 +616,13 @@ function cardHtml(c, srcKey) {
     : `<span class="badge b-warn">PASS + ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
   const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : `<span class="badge b-rh">Robinhood</span>`;
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
+  let bigHtml = "";
+  if (c.big) {
+    const b = c.big, net = b.buyUsd - b.sellUsd;
+    const top = b.top ? ` Biggest: ${b.top.kind} ${money(b.top.usd)} at ${new Date(b.top.time).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}${b.top.wallet ? ` by ${esc(b.top.wallet.slice(0, 4))}..${esc(b.top.wallet.slice(-4))}` : ""}.` : "";
+    bigHtml = `<div class="big"><span class="h">Big trades over $1K, last 24h</span>
+      ${b.buys + b.sells ? `<b class="${net >= 0 ? "up" : "down"}">${b.buys} buys ${money(b.buyUsd)} / ${b.sells} sells ${money(b.sellUsd)}</b> from ${b.wallets} wallet${b.wallets === 1 ? "" : "s"}.${top}` : "None. Only small trades so far."}</div>`;
+  }
   const labelClass = /utility/.test(c.label || "") && !/meme/i.test(c.label || "") ? "l-util" : /meme/i.test(c.label || "") ? "l-meme" : "l-none";
   const about = `<div class="about">
       <span class="lbl ${labelClass}">${esc(c.label || "Not read")}</span>${c.gt_score ? `<span class="lbl l-none" title="GeckoTerminal trust score">GT score ${c.gt_score}</span>` : ""}
@@ -599,6 +648,7 @@ function cardHtml(c, srcKey) {
       ${link("Chart", c.chart)}${link("X", c.x)}${link("Telegram", c.telegram)}${link("Website", c.website)}${c.bubblemap ? link("Bubble map", c.bubblemap) : ""}
       <button type="button" data-copy="${esc(c.token)}">Copy address</button>
     </div>
+    ${bigHtml}
     ${warns}
     <div class="plan">
       <div class="h">Flip plan from ${money(c.price)}</div>
@@ -660,7 +710,13 @@ document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
     try { localStorage.setItem("flipLastScan", JSON.stringify(res)); } catch (e) {}
     const passed = res.sources.reduce((n, s) => n + s.passed.length, 0);
     const added = logPassed(res);
-    $("#statustext").textContent = `Scan finished: ${passed} coin${passed === 1 ? "" : "s"} passed. ${added} new coin${added === 1 ? "" : "s"} added to the track record.`;
+    $("#statustext").textContent = `Scan finished: ${passed} coin${passed === 1 ? "" : "s"} passed. ${added} new coin${added === 1 ? "" : "s"} added to the paper portfolio.`;
+    renderPaper();
+    if ($("#autocheck").checked && Object.values(track).some(e => !e.final && Date.parse(e.logged) < Date.now() - 3600e3)) {
+      $("#statustext").textContent += " Updating the paper portfolio...";
+      await checkResults(true);
+      $("#statustext").textContent = `Scan finished: ${passed} passed, ${added} new. Paper portfolio updated.`;
+    }
   } catch (e) {
     $("#statustext").textContent = scanRun.stopped ? "Scan stopped. The coins already checked stay on screen." : "Scan stopped: " + e.message + ". Try again in a minute.";
     if (data) { data.finished = new Date().toISOString(); render(); }
@@ -694,10 +750,19 @@ function logPassed(res) {
   let added = 0;
   for (const s of res.sources) for (const c of s.passed) {
     if (track[c.token] || !c.price) continue;
+    const b = c.big || {};
     track[c.token] = {
       token: c.token, pair: c.pair, chain: c.chain, source: s.key, symbol: c.symbol, name: c.name,
       label: c.label || "", warns: c.warns.length, logged: res.finished || new Date().toISOString(),
       price0: c.price, liq0: c.liq, mc0: c.mc, chart: c.chart,
+      // Snapshot at scan time. This is what later learning runs on: which numbers went with 2x, which with the stop.
+      features: {
+        age_h: c.age_h, holders: c.holders, buys24: c.buys24, sells24: c.sells24, vol24: c.vol24,
+        chg1: c.chg1, chg24: c.chg24, gt_score: c.gt_score || null, warnings: c.warns.slice(0, 6),
+        hasX: !!safeUrl(c.x), hasTg: !!safeUrl(c.telegram), hasWeb: !!safeUrl(c.website),
+        bigBuys: b.buys || 0, bigBuyUsd: Math.round(b.buyUsd || 0), bigSells: b.sells || 0, bigSellUsd: Math.round(b.sellUsd || 0), bigWallets: b.wallets || 0,
+        hourUtc: new Date().getUTCHours(), weekday: new Date().getUTCDay(), window: res.hours,
+      },
       now: null, liq: null, best: null, outcome: "Open", final: false, checked: null,
     };
     added++;
@@ -731,13 +796,14 @@ function planResult(e) {
   return e.now && e.price0 ? e.now / e.price0 : 1;
 }
 
-async function checkResults() {
+async function checkResults(quiet) {
   const entries = Object.values(track);
   if (!entries.length) return;
   const btn = $("#checkbtn"); btn.disabled = true;
-  const say = m => $("#trackstatus").textContent = m;
+  const say = m => { $("#trackstatus").textContent = m; if (quiet) $("#statustext").textContent = "Updating the paper portfolio: " + m; };
   try {
-    const todo = entries.filter(e => !e.final);
+    // Coins logged less than an hour ago have no candles worth replaying yet.
+    const todo = entries.filter(e => !e.final && (!quiet || Date.parse(e.logged) < Date.now() - 3600e3));
     for (let i = 0; i < todo.length; i++) {
       const e = todo[i];
       say(`Checking ${i + 1} of ${todo.length} (${e.symbol})`);
@@ -768,15 +834,63 @@ async function checkResults() {
       saveTrack(); renderTrack();
       await sleep(PAUSE);
     }
+    renderPaper();
     say(todo.length ? "Results updated." : "Nothing left to check: every coin has a final result.");
   } catch (err) {
     say("Check stopped: " + err.message);
   } finally { btn.disabled = false; }
 }
 
+// ---------- paper portfolio ----------
+const PAPER = 250, COST = 0.03;
+const positionValue = e => e.checked ? PAPER * planResult(e) * (1 - COST) : PAPER;
+const BASKETS = [
+  ["All passed coins", () => true],
+  ["No warnings only", e => e.warns === 0],
+  ["pump.fun only", e => e.source === "pumpfun"],
+  ["Robinhood only", e => e.source === "robinhood"],
+  ["Says utility only", e => /utility/.test(e.label || "")],
+  ["Big buys beat big sells", e => (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
+  ["Has X or Telegram", e => (e.features || {}).hasX || (e.features || {}).hasTg],
+];
+function portfolio(es) {
+  const invested = es.length * PAPER, value = es.reduce((n, e) => n + positionValue(e), 0);
+  return {n: es.length, invested, value, pnl: value - invested, pct: invested ? (value / invested - 1) * 100 : 0,
+    closed: es.filter(e => e.final).length, open: es.filter(e => !e.final).length, unchecked: es.filter(e => !e.checked).length};
+}
+const signed = (x, suffix = "") => (x >= 0 ? "+" : "-") + money(Math.abs(x)).replace("$", "$") + suffix;
+const pctTxt = x => (x >= 0 ? "+" : "") + x.toFixed(1) + "%";
+function renderPaper() {
+  const es = Object.values(track);
+  const p = portfolio(es);
+  const strip = $("#paper");
+  if (!es.length) { strip.innerHTML = ""; return; }
+  strip.innerHTML = `<span class="h">Paper portfolio, $${PAPER} per passed coin</span>
+    <span>${p.n} coins</span><span>in: <b>${money(p.invested)}</b></span><span>now: <b>${money(p.value)}</b></span>
+    <span class="${p.pnl >= 0 ? "up" : "down"}"><b>${signed(p.pnl)} (${pctTxt(p.pct)})</b></span>
+    <span>${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} not checked yet` : ""}</span>`;
+}
+
 function renderTrack() {
   const es = Object.values(track).sort((a, b) => Date.parse(b.logged) - Date.parse(a.logged));
-  updateTrackCount();
+  updateTrackCount(); renderPaper();
+  const pAll = portfolio(es);
+  $("#ptiles").innerHTML = `
+    <div class="tile"><b>${money(pAll.invested)}</b><span>Put in (${pAll.n} coins x $${PAPER})</span></div>
+    <div class="tile"><b>${money(pAll.value)}</b><span>Worth now</span></div>
+    <div class="tile"><b class="${pAll.pnl >= 0 ? "o-win" : "o-loss"}">${es.length ? signed(pAll.pnl) : "-"}</b><span>Profit or loss</span></div>
+    <div class="tile"><b class="${pAll.pnl >= 0 ? "o-win" : "o-loss"}">${es.length ? pctTxt(pAll.pct) : "-"}</b><span>Return</span></div>
+    <div class="tile"><b>${pAll.closed} / ${pAll.open}</b><span>Closed / open positions</span></div>`;
+  $("#baskets").innerHTML = `<tr><th>Rule</th><th class="num">Coins</th><th class="num">Put in</th><th class="num">Worth now</th><th class="num">Return</th><th class="num">Hit 2x</th><th class="num">Stopped or dead</th></tr>` +
+    BASKETS.map(([name, fn]) => {
+      const sub = es.filter(fn), p = portfolio(sub);
+      const ck = sub.filter(e => e.checked);
+      const wins = ck.filter(e => e.outcome === "2x hit" || e.outcome === "3x hit").length;
+      const loss = ck.filter(e => e.outcome === "Stop hit" || e.outcome === "Dead").length;
+      const pc = n => ck.length ? Math.round(n / ck.length * 100) + "%" : "-";
+      return `<tr><td>${name}</td><td class="num">${p.n}</td><td class="num">${money(p.invested)}</td><td class="num">${money(p.value)}</td>
+        <td class="num ${p.n ? (p.pnl >= 0 ? "o-win" : "o-loss") : ""}">${p.n ? pctTxt(p.pct) : "-"}</td><td class="num">${pc(wins)}</td><td class="num">${pc(loss)}</td></tr>`;
+    }).join("");
   const checked = es.filter(e => e.checked);
   const wins = checked.filter(e => e.outcome === "2x hit" || e.outcome === "3x hit").length;
   const stops = checked.filter(e => e.outcome === "Stop hit" || e.outcome === "Dead").length;
@@ -830,8 +944,10 @@ document.querySelectorAll(".views button").forEach(b => b.onclick = () => {
   if (b.dataset.view === "track") renderTrack();
 });
 
+try { $("#autocheck").checked = localStorage.getItem("flipAuto") !== "off"; } catch (e) {}
+$("#autocheck").onchange = () => { try { localStorage.setItem("flipAuto", $("#autocheck").checked ? "on" : "off"); } catch (e) {} };
 try { const saved = localStorage.getItem("flipLastScan"); if (saved) data = JSON.parse(saved); } catch (e) {}
-render(); updateTrackCount();
+render(); updateTrackCount(); renderPaper();
 </script>
 </body>
 </html>

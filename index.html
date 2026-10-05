@@ -709,14 +709,15 @@ function logPassed(res) {
 // Replay candles since the scan. Conservative: if 2x and the stop land in the same candle, the stop counts first.
 function replay(candles, price0) {
   const stop = price0 * STOP, x2 = price0 * 2, x3 = price0 * 3;
-  let best = 0, hit2 = false, hit3 = false, stopped = false;
+  let best = 0, hit2 = false, hit3 = false, stopped = false, done = false;
   for (const [, , high, low] of candles) {
-    best = Math.max(best, high / price0);
-    if (!hit2 && !stopped) {
-      if (low <= stop) { stopped = true; break; }
+    best = Math.max(best, high / price0); // the full move, even after the plan is out
+    if (done) continue;
+    if (!hit2) {
+      if (low <= stop) { stopped = true; done = true; continue; }
       if (high >= x2) hit2 = true;
     }
-    if (hit2 && high >= x3) { hit3 = true; break; }
+    if (hit2 && high >= x3) { hit3 = true; done = true; }
   }
   return {best, hit2, hit3, stopped};
 }

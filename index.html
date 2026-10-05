@@ -405,7 +405,8 @@ function prefilter(pools, hours, L) {
     else if (FAME.test(sym) || FAME.test(a.name)) reason = "celebrity or company name";
     if (reason) { dropped[reason] = (dropped[reason] || 0) + 1; continue; }
     seen.add(token);
-    if (!keep[token] || keep[token].liq < liq) keep[token] = {token, symbol: sym, liq, vol24, ageH};
+    const tpb = t24.buyers ? buys24 / t24.buyers : null; // trades per buyer: bots make many trades from few wallets
+    if (!keep[token] || keep[token].liq < liq) keep[token] = {token, symbol: sym, liq, vol24, ageH, tpb, buyers24: t24.buyers || 0};
   }
   return {keep: Object.values(keep), dropped: Object.entries(dropped).sort((a, b) => b[1] - a[1])};
 }
@@ -467,6 +468,7 @@ async function solanaSafety(token, pairAddr, F, W, N) {
   const cb = r.creatorBalance || 0;
   if (supply && cb / supply * 100 > 5) F.push(`Creator still holds ${(cb / supply * 100).toFixed(1)}%`);
   N.holders = r.totalHolders;
+  N.creator = r.creator || null;
 }
 async function robinhoodSafety(token, pairAddr, F, W, N) {
   let d;
@@ -505,6 +507,7 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   else if (locked >= 90) N.push(`Pool money in a known lock: ${locked.toFixed(0)}%`);
   else W.push("Pool lock unknown: not a Pons launch, and GoPlus cannot see Uniswap V4 pools");
   N.holders = r.holder_count;
+  N.creator = r.creator_address || null;
 }
 async function check(p) {
   const chain = p.chainId, b = p.baseToken;
@@ -521,6 +524,7 @@ async function check(p) {
   if ((tx1.buys || 0) >= 20 && (tx1.sells || 0) === 0) F.push("Many buys, zero sells in 1h: maybe you cannot sell");
   if (mc && liq / mc < 0.05) W.push(`Pool is only ${(liq / mc * 100).toFixed(1)}% of market cap: big sells crash it`);
   if ((chg.h1 || 0) <= -30) W.push(`Falling hard: ${chg.h1}% in 1h`);
+  if ((chg.h6 || 0) >= 150) W.push(`Already up ${Math.round(chg.h6)}% in 6h: you would be buying after the run`);
   let bubblemap = null;
   if (chain === "solana") { await solanaSafety(b.address, p.pairAddress, F, W, N); bubblemap = `https://app.bubblemaps.io/sol/token/${b.address}`; }
   else if (chain === "robinhood") await robinhoodSafety(b.address, p.pairAddress, F, W, N);
@@ -538,8 +542,8 @@ async function check(p) {
     verdict: F.length ? "FAIL" : N.unchecked ? "NOT CHECKED" : (W.length ? "PASS WITH WARNINGS" : "PASS"),
     unchecked: N.unchecked || null,
     age_h: Math.round(ageMin / 6) / 10, price, mc, liq, vol24: (p.volume || {}).h24 || 0,
-    buys24: tx24.buys || 0, sells24: tx24.sells || 0, chg1: chg.h1 || 0, chg24: chg.h24 || 0,
-    holders: N.holders ?? null, fails: F, warns: W, chart: p.url, bubblemap,
+    buys24: tx24.buys || 0, sells24: tx24.sells || 0, chg1: chg.h1 || 0, chg6: chg.h6 || 0, chg24: chg.h24 || 0,
+    holders: N.holders ?? null, creator: N.creator || null, fails: F, warns: W, chart: p.url, bubblemap,
     plan: {x2: price * 2, x3: price * 3, stop: price * 0.67, max_bet: liq * 0.02}, ...soc,
   };
 }
@@ -578,18 +582,25 @@ async function addBigTrades(c, src, say) {
   try { d = await getJSONSlow(`${GT}/${src.network}/pools/${c.pair}/trades?trade_volume_in_usd_greater_than=1000`, say); }
   catch (e) { return; }
   const since = Date.now() - 864e5;
-  const big = {buys: 0, buyUsd: 0, sells: 0, sellUsd: 0, wallets: new Set(), buyers: {}, top: null};
+  const big = {buys: 0, buyUsd: 0, sells: 0, sellUsd: 0, wallets: new Set(), buyers: {}, sellers: {}, top: null};
   for (const t of d.data || []) {
     const a = t.attributes || {};
     if (Date.parse(a.block_timestamp) < since) continue;
     const usd = num(a.volume_in_usd), kind = a.kind === "buy" ? "buy" : "sell", w = a.tx_from_address || "";
     if (kind === "buy") { big.buys++; big.buyUsd += usd; if (w) big.buyers[w] = (big.buyers[w] || 0) + usd; }
-    else { big.sells++; big.sellUsd += usd; }
+    else { big.sells++; big.sellUsd += usd; if (w) big.sellers[w] = (big.sellers[w] || 0) + usd; }
     if (w) big.wallets.add(w);
     if (!big.top || usd > big.top.usd) big.top = {usd, kind, wallet: w, time: a.block_timestamp};
   }
   big.wallets = big.wallets.size;
+  // The lesson from COINPUTER: the creator wallet dumped through big trades while holding "0%".
+  if (c.creator) {
+    const sold = big.sellers[c.creator] || 0, bought = big.buyers[c.creator] || 0;
+    if (sold >= 1000) { c.fails.push(`Creator wallet is selling: ${money(sold)} in big trades today`); c.verdict = "FAIL"; }
+    else if (bought >= 1000) c.warns.push(`Creator wallet is buying its own coin (${money(bought)}): can be fake volume`);
+  }
   big.buyers = Object.entries(big.buyers).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([w, usd]) => ({w, usd: Math.round(usd)}));
+  delete big.sellers;
   c.big = big;
 }
 
@@ -614,27 +625,36 @@ async function runScan(hours, chains, say, progress, onSource) {
       say(`${src.label}: safety check ${i + 1} of ${keep.length} (${k.symbol})`);
       try {
         const p = await findPair(k.token, src.dexChain);
-        if (p) cards.push(await check(p));
+        if (p) {
+          const c = await check(p);
+          c.tpb = k.tpb; c.buyers24 = k.buyers24;
+          if (k.tpb && k.tpb > 3.5) c.warns.push(`${k.tpb.toFixed(1)} buys per buyer in 24h: looks like bot churn`);
+          if (c.verdict === "PASS" && c.warns.length) c.verdict = "PASS WITH WARNINGS";
+          cards.push(c);
+        }
       } catch (e) { if (scanRun.stopped) throw e; say(`${k.symbol}: check failed`); }
       tick();
       await sleep(1000);
     }
     const order = {"PASS": 0, "PASS WITH WARNINGS": 1, "NOT CHECKED": 2, "FAIL": 3};
+    const isPass = c => c.verdict === "PASS" || c.verdict === "PASS WITH WARNINGS";
     cards.sort((a, b) => order[a.verdict] - order[b.verdict] || a.age_h - b.age_h);
-    const passed = cards.filter(c => c.verdict === "PASS" || c.verdict === "PASS WITH WARNINGS");
-    for (let i = 0; i < passed.length; i++) {
+    const toRead = cards.filter(isPass);
+    for (let i = 0; i < toRead.length; i++) {
       checkStop();
-      say(`${src.label}: reading description ${i + 1} of ${passed.length} (${passed[i].symbol})`);
-      await addInfo(passed[i], src, say);
+      say(`${src.label}: reading description ${i + 1} of ${toRead.length} (${toRead[i].symbol})`);
+      await addInfo(toRead[i], src, say);
       await sleep(PAUSE);
       checkStop();
-      say(`${src.label}: reading big trades ${i + 1} of ${passed.length} (${passed[i].symbol})`);
-      await addBigTrades(passed[i], src, say);
+      say(`${src.label}: reading big trades ${i + 1} of ${toRead.length} (${toRead[i].symbol})`);
+      await addBigTrades(toRead[i], src, say); // can turn a pass into a FAIL (creator selling)
+      if (toRead[i].verdict === "PASS" && toRead[i].warns.length) toRead[i].verdict = "PASS WITH WARNINGS";
       tick();
       await sleep(PAUSE);
     }
+    cards.sort((a, b) => order[a.verdict] - order[b.verdict] || a.age_h - b.age_h);
     result.sources.push({key, label: src.label, looked: pools.length, pagesRead: read, pagesPlanned: planned, dropped,
-      passed, unchecked: cards.filter(c => c.verdict === "NOT CHECKED"), failed: cards.filter(c => c.verdict === "FAIL")});
+      passed: cards.filter(isPass), unchecked: cards.filter(c => c.verdict === "NOT CHECKED"), failed: cards.filter(c => c.verdict === "FAIL")});
     onSource(result);
   }
   result.finished = new Date().toISOString();
@@ -798,8 +818,9 @@ function logPassed(res) {
       price0: c.price, liq0: c.liq, mc0: c.mc, chart: c.chart,
       // Snapshot at scan time. This is what later learning runs on: which numbers went with 2x, which with the stop.
       features: {
-        age_h: c.age_h, holders: c.holders, buys24: c.buys24, sells24: c.sells24, vol24: c.vol24,
-        chg1: c.chg1, chg24: c.chg24, gt_score: c.gt_score || null, warnings: c.warns.slice(0, 6),
+        age_h: c.age_h, holders: c.holders, buys24: c.buys24, sells24: c.sells24, vol24: c.vol24, buyers24: c.buyers24 || null,
+        tradesPerBuyer: c.tpb ? Math.round(c.tpb * 10) / 10 : null, liqToMc: c.mc ? Math.round(c.liq / c.mc * 1000) / 10 : null,
+        chg1: c.chg1, chg6: c.chg6, chg24: c.chg24, gt_score: c.gt_score || null, warnings: c.warns.slice(0, 6),
         hasX: !!safeUrl(c.x), hasTg: !!safeUrl(c.telegram), hasWeb: !!safeUrl(c.website),
         bigBuys: b.buys || 0, bigBuyUsd: Math.round(b.buyUsd || 0), bigSells: b.sells || 0, bigSellUsd: Math.round(b.sellUsd || 0),
         bigWallets: b.wallets || 0, bigBuyers: b.buyers || [], whale: !!isWhale(c),
@@ -892,6 +913,9 @@ const BASKETS = [
   ["Whale buy seen", e => !!(e.features || {}).whale],
   ["Big buys beat big sells", e => (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
   ["Has X or Telegram", e => (e.features || {}).hasX || (e.features || {}).hasTg],
+  ["Not up over 150% in 6h", e => ((e.features || {}).chg6 || 0) < 150],
+  ["Under 3.5 buys per buyer", e => (e.features || {}).tradesPerBuyer !== null && (e.features || {}).tradesPerBuyer !== undefined && e.features.tradesPerBuyer <= 3.5],
+  ["Pool at least 10% of market cap", e => ((e.features || {}).liqToMc || 0) >= 10],
 ];
 function portfolio(es) {
   const invested = es.length * PAPER, value = sum(es.map(positionValue));

@@ -6,193 +6,239 @@
 <meta name="robots" content="noindex, nofollow">
 <title>Flip Scanner</title>
 <!--
-  Chrome-only Flip Scanner. Open this file in Chrome and bookmark it.
-  Everything runs in the browser using free public APIs:
-  GeckoTerminal (pool lists), DexScreener (pairs, socials), RugCheck (Solana safety), GoPlus (Robinhood safety).
-  Same rules as .claude/skills/flip-check/scan.py and flip_check.py. Keep the two in step when rules change.
+  Flip Scanner. Runs fully in the browser with free public data:
+  GeckoTerminal (pool lists, coin info, big trades, candles), DexScreener (pairs, socials),
+  RugCheck (Solana safety), GoPlus (Robinhood Chain safety). No keys, no server.
+  Same rules as .claude/skills/flip-check/flip_check.py. Keep the two in step when rules change.
 -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#f6f7f9; --panel:#ffffff; --ink:#15181d; --muted:#667085; --line:#e4e7ec;
-  --accent:#4f46e5; --accent-ink:#ffffff; --pass:#067647; --pass-bg:#e7f6ee;
-  --warn:#b54708; --warn-bg:#fef4e6; --fail:#b42318; --fail-bg:#fdecea; --chip:#eef0f4;
-  --sol:#7c3aed; --rh:#16a34a;
+  --bg:#f3f5f9; --bg2:#e9edf5; --panel:rgba(255,255,255,.78); --panel-solid:#ffffff; --ink:#0f1320; --muted:#5b6478; --line:rgba(15,19,32,.1);
+  --accent:#3b5bff; --accent-ink:#ffffff; --cyan:#0b9fd6; --lime:#1f9d55; --lime-bg:rgba(31,157,85,.12);
+  --amber:#b45309; --amber-bg:rgba(180,83,9,.12); --rose:#d1294a; --rose-bg:rgba(209,41,74,.12); --chip:rgba(15,19,32,.06);
+  --sol:#7c3aed; --rh:#15803d; --glow:0 0 0 rgba(0,0,0,0); --shadow:0 10px 30px rgba(15,19,32,.08);
+  --blob1:rgba(59,91,255,.18); --blob2:rgba(11,159,214,.16); --blob3:rgba(31,157,85,.12);
 }
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --bg:#0e1116; --panel:#161a21; --ink:#e7eaf0; --muted:#98a2b3; --line:#262c36;
-    --accent:#818cf8; --accent-ink:#0e1116; --pass:#4ade80; --pass-bg:#10291c;
-    --warn:#fbbf24; --warn-bg:#2a2112; --fail:#f87171; --fail-bg:#2c1515; --chip:#202631;
-    --sol:#a78bfa; --rh:#4ade80;
-  }
-}
-:root[data-theme="dark"]{
-  --bg:#0e1116; --panel:#161a21; --ink:#e7eaf0; --muted:#98a2b3; --line:#262c36;
-  --accent:#818cf8; --accent-ink:#0e1116; --pass:#4ade80; --pass-bg:#10291c;
-  --warn:#fbbf24; --warn-bg:#2a2112; --fail:#f87171; --fail-bg:#2c1515; --chip:#202631;
-  --sol:#a78bfa; --rh:#4ade80;
+:root[data-theme="dark"], :root:not([data-theme="light"]){
+  --bg:#06080f; --bg2:#0b0f1a; --panel:rgba(16,21,34,.72); --panel-solid:#111627; --ink:#e9edf7; --muted:#8e98b3; --line:rgba(233,237,247,.09);
+  --accent:#38e1ff; --accent-ink:#06080f; --cyan:#38e1ff; --lime:#b6ff3b; --lime-bg:rgba(182,255,59,.12);
+  --amber:#ffb13b; --amber-bg:rgba(255,177,59,.12); --rose:#ff3d8f; --rose-bg:rgba(255,61,143,.12); --chip:rgba(233,237,247,.07);
+  --sol:#c4a3ff; --rh:#7cf5a4; --glow:0 0 24px rgba(56,225,255,.25); --shadow:0 14px 40px rgba(0,0,0,.45);
+  --blob1:rgba(56,225,255,.16); --blob2:rgba(182,255,59,.10); --blob3:rgba(255,61,143,.12);
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
-.wrap{max-width:1180px;margin:0 auto;padding:20px 16px 48px}
-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
-h1{font-size:22px;margin:0;letter-spacing:-.01em}
-.sub{color:var(--muted);font-size:13px}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
-.controls{display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between}
-.group{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.label{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-right:4px}
-button.scan{border:0;background:var(--accent);color:var(--accent-ink);font-weight:600;padding:10px 16px;border-radius:10px;cursor:pointer;font-size:15px;min-width:64px}
-button.scan:disabled{opacity:.45;cursor:not-allowed}
-button.scan.last{outline:2px solid var(--ink);outline-offset:2px}
-label.src{display:flex;gap:6px;align-items:center;background:var(--chip);padding:8px 12px;border-radius:999px;cursor:pointer;font-size:14px}
-.status{margin-top:12px;font-size:13px;color:var(--muted);display:flex;gap:10px;align-items:center;min-height:20px}
-.bar{height:4px;background:var(--chip);border-radius:4px;margin-top:10px;overflow:hidden;display:none}
-.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .4s}
-.running .bar{display:block}
-.spin{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s 1s linear infinite;display:none;flex:none}
-.running .spin{display:inline-block}
-@keyframes s{to{transform:rotate(360deg)}}
-.filters{display:flex;gap:8px;margin:20px 0 10px;flex-wrap:wrap}
-.filters button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:999px;cursor:pointer;font-size:13px}
-.filters button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
-.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:18px}
-.summary .panel h3{margin:0 0 6px;font-size:15px}
-.summary ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
-.top{display:flex;gap:10px;align-items:center}
-.logo{width:40px;height:40px;border-radius:10px;background:var(--chip);flex:none;object-fit:cover;display:grid;place-items:center;font-weight:700;color:var(--muted)}
-.title{min-width:0;flex:1}
-.sym{font-weight:700;font-size:17px}
-.name{color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.badges{display:flex;flex-direction:column;gap:4px;align-items:flex-end}
-.badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;white-space:nowrap}
-.b-pass{background:var(--pass-bg);color:var(--pass)}
-.b-warn{background:var(--warn-bg);color:var(--warn)}
-.b-sol{background:var(--chip);color:var(--sol)}
-.b-rh{background:var(--chip);color:var(--rh)}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.stat{background:var(--bg);border-radius:8px;padding:6px 8px;min-width:0}
-.stat b{display:block;font-size:14px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.stat span{font-size:11px;color:var(--muted)}
-.up{color:var(--pass)} .down{color:var(--fail)}
-.links{display:flex;flex-wrap:wrap;gap:6px}
-.links a,.links span,.links button{font-size:12px;padding:5px 9px;border-radius:8px;background:var(--chip);color:var(--ink);text-decoration:none;border:0;cursor:pointer;font-family:inherit}
-.links span{opacity:.45;cursor:default;text-decoration:line-through}
-.warns{margin:0;padding:8px 10px 8px 26px;background:var(--warn-bg);color:var(--warn);border-radius:8px;font-size:12.5px}
-.about p{margin:6px 0 0;font-size:13px;color:var(--muted);line-height:1.4}
-.big{font-size:12.5px;color:var(--muted);background:var(--bg);border-radius:8px;padding:8px 10px;line-height:1.45}
-.big .h{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
-.paper{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin-top:14px;font-size:13.5px}
-.paper b{font-variant-numeric:tabular-nums}
-.paper .h{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);width:100%}
-table.baskets{border-collapse:collapse;width:100%;font-size:13px}
-table.baskets th,table.baskets td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--line)}
-table.baskets th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-table.baskets td.num{text-align:right;font-variant-numeric:tabular-nums}
-h2{font-size:16px;margin:22px 0 8px}
-.lbl{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:999px;margin-right:6px}
-.l-util{background:var(--pass-bg);color:var(--pass)} .l-meme{background:var(--warn-bg);color:var(--warn)} .l-none{background:var(--chip);color:var(--muted)}
-.note{font-size:12.5px;color:var(--muted);margin:14px 0 0;padding:10px 12px;border:1px dashed var(--line);border-radius:10px}
-button.stop{border:1px solid var(--fail);background:transparent;color:var(--fail);font-weight:600;padding:9px 14px;border-radius:10px;cursor:pointer;font-size:14px;display:none}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;overflow-x:hidden}
+.sky{position:fixed;inset:0;z-index:-1;overflow:hidden;background:
+  linear-gradient(to right,var(--line) 1px,transparent 1px) 0 0/64px 64px,
+  linear-gradient(to bottom,var(--line) 1px,transparent 1px) 0 0/64px 64px,var(--bg)}
+.sky i{position:absolute;border-radius:50%;filter:blur(80px);opacity:.9;animation:drift 22s ease-in-out infinite alternate}
+.sky i:nth-child(1){width:60vw;height:60vw;left:-15vw;top:-20vw;background:var(--blob1)}
+.sky i:nth-child(2){width:50vw;height:50vw;right:-15vw;top:10vh;background:var(--blob2);animation-duration:28s}
+.sky i:nth-child(3){width:45vw;height:45vw;left:30vw;bottom:-25vw;background:var(--blob3);animation-duration:34s}
+@keyframes drift{from{transform:translate3d(0,0,0) scale(1)}to{transform:translate3d(6vw,4vh,0) scale(1.12)}}
+.wrap{max-width:1200px;margin:0 auto;padding:22px 16px 60px}
+.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand svg{width:42px;height:42px;filter:drop-shadow(0 0 10px var(--accent))}
+.brand h1{font:700 24px/1 "Space Grotesk",Inter,sans-serif;letter-spacing:.04em;margin:0;text-transform:uppercase}
+.brand .sub{color:var(--muted);font-size:12.5px;margin-top:4px}
+.hdr-right{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ticker{display:flex;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:8px 14px;backdrop-filter:blur(12px);font-size:13px}
+.ticker b{font-family:"JetBrains Mono",monospace}
+.ticker .pulse{width:8px;height:8px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 0 var(--lime);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--lime) 60%,transparent)}70%{box-shadow:0 0 0 10px transparent}100%{box-shadow:0 0 0 0 transparent}}
+.theme{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;padding:8px 12px;cursor:pointer;font-size:13px;backdrop-filter:blur(12px)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;backdrop-filter:blur(14px);box-shadow:var(--shadow)}
+.controls{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center}
+.radar{width:92px;height:92px;position:relative;flex:none}
+.radar svg{width:100%;height:100%}
+.radar .sweep{position:absolute;inset:6px;border-radius:50%;background:conic-gradient(from 0deg,transparent 0 70%,color-mix(in srgb,var(--accent) 70%,transparent) 100%);opacity:0;transition:opacity .4s;mask:radial-gradient(circle,transparent 0 0,black 0)}
+.running .radar .sweep{opacity:1;animation:spin 1.6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.radar .pct{position:absolute;inset:0;display:grid;place-items:center;font:700 15px "JetBrains Mono",monospace}
+.rows{display:flex;flex-direction:column;gap:12px;min-width:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-right:4px;min-width:72px}
+button.scan{border:1px solid var(--line);background:var(--chip);color:var(--ink);font-weight:600;padding:9px 15px;border-radius:12px;cursor:pointer;font-size:14px;font-family:"Space Grotesk",Inter,sans-serif;transition:transform .15s,box-shadow .15s,background .15s}
+button.scan:hover:not(:disabled){transform:translateY(-1px);box-shadow:var(--glow);background:var(--accent);color:var(--accent-ink)}
+button.scan:disabled{opacity:.4;cursor:not-allowed}
+button.scan.last{background:var(--accent);color:var(--accent-ink);box-shadow:var(--glow)}
+button.stop{border:1px solid var(--rose);background:transparent;color:var(--rose);font-weight:600;padding:8px 14px;border-radius:12px;cursor:pointer;font-size:13px;display:none}
 .running button.stop{display:inline-block}
-.views{display:flex;gap:8px;margin:20px 0 0}
-.views button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 14px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600}
-.views button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+label.src{display:flex;gap:6px;align-items:center;background:var(--chip);padding:7px 12px;border-radius:999px;cursor:pointer;font-size:13px;border:1px solid transparent}
+label.src:has(input:checked){border-color:var(--line)}
+.status{font-size:13px;color:var(--muted);min-height:20px;display:flex;gap:10px;align-items:center}
+.bar{height:5px;background:var(--chip);border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--lime));transition:width .4s;box-shadow:var(--glow)}
+.views{display:flex;gap:8px;margin:22px 0 0}
+.views button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:9px 16px;border-radius:12px;cursor:pointer;font-size:14px;font-weight:600;font-family:"Space Grotesk",Inter,sans-serif;backdrop-filter:blur(12px)}
+.views button.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 #track{display:none} body.view-track #track{display:block} body.view-track #scanview{display:none}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:14px 0}
-.tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
-.tile b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
-.tile span{font-size:12px;color:var(--muted)}
-.tbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}
-.tbar button,.tbar label{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 12px;border-radius:10px;cursor:pointer;font-size:13px}
-.tbar button.main{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
-.tbar button:disabled{opacity:.45;cursor:not-allowed}
-.tbar input[type=file]{display:none}
-.twrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:14px}
-table.track{border-collapse:collapse;width:100%;font-size:13px;min-width:760px}
-table.track th,table.track td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
-table.track th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-table.track td.num{font-variant-numeric:tabular-nums;text-align:right}
-.o-win{color:var(--pass);font-weight:700} .o-loss{color:var(--fail);font-weight:700} .o-open{color:var(--muted)}
-.tsub{font-size:12.5px;color:var(--muted);margin:8px 0 0}
-.plan{border:1px dashed var(--line);border-radius:10px;padding:8px 10px;font-size:13px;display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}
-.plan .h{grid-column:1/-1;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:2px}
-.plan b{font-variant-numeric:tabular-nums}
-.failed{margin-top:22px}
-.failed details{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 16px}
+.filters{display:flex;gap:8px;margin:16px 0 12px;flex-wrap:wrap}
+.filters button{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:999px;cursor:pointer;font-size:12.5px;backdrop-filter:blur(12px)}
+.filters button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:18px}
+.summary h3{margin:0 0 4px;font:700 15px "Space Grotesk",Inter,sans-serif}
+.summary .sub{color:var(--muted);font-size:12.5px}
+.summary ul{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;columns:2;column-gap:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px}
+.card{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0;backdrop-filter:blur(14px);box-shadow:var(--shadow);transition:transform .2s,box-shadow .2s;overflow:hidden;animation:rise .5s ease both}
+.card:hover{transform:translateY(-3px);box-shadow:var(--shadow),var(--glow)}
+.card::before{content:"";position:absolute;left:0;top:0;right:0;height:3px;background:var(--lime)}
+.card.v-warn::before{background:var(--amber)}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.top{display:flex;gap:12px;align-items:center}
+.logo{width:46px;height:46px;border-radius:14px;background:var(--chip);flex:none;object-fit:cover;display:grid;place-items:center;font:700 14px "Space Grotesk",sans-serif;color:var(--muted)}
+.title{min-width:0;flex:1}
+.sym{font:700 19px "Space Grotesk",Inter,sans-serif;letter-spacing:.02em}
+.name{color:var(--muted);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badges{display:flex;flex-direction:column;gap:5px;align-items:flex-end}
+.badge{font-size:10.5px;font-weight:700;padding:4px 9px;border-radius:999px;white-space:nowrap;letter-spacing:.04em;text-transform:uppercase}
+.b-pass{background:var(--lime-bg);color:var(--lime)} .b-warn{background:var(--amber-bg);color:var(--amber)}
+.b-sol{background:var(--chip);color:var(--sol)} .b-rh{background:var(--chip);color:var(--rh)}
+.about{font-size:13px;color:var(--muted);line-height:1.45}
+.about p{margin:6px 0 0}
+.lbl{display:inline-block;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:999px;margin:0 6px 4px 0;letter-spacing:.03em}
+.l-util{background:var(--lime-bg);color:var(--lime)} .l-meme{background:var(--amber-bg);color:var(--amber)} .l-none{background:var(--chip);color:var(--muted)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.stat{background:var(--chip);border-radius:10px;padding:7px 9px;min-width:0}
+.stat b{display:block;font:700 14px "JetBrains Mono",monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat span{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.up{color:var(--lime)} .down{color:var(--rose)}
+.pressure{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted)}
+.pressure .track{height:7px;border-radius:7px;background:var(--rose-bg);overflow:hidden}
+.pressure .track i{display:block;height:100%;background:linear-gradient(90deg,var(--lime),color-mix(in srgb,var(--lime) 60%,var(--cyan)));border-radius:7px}
+.pressure .legend{display:flex;justify-content:space-between}
+.big{font-size:12.5px;color:var(--muted);background:var(--chip);border-radius:10px;padding:8px 10px;line-height:1.45;display:flex;gap:10px;align-items:flex-start}
+.big .h{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px}
+.whale{flex:none;font-size:22px;filter:drop-shadow(0 0 6px var(--cyan))}
+.links{display:flex;flex-wrap:wrap;gap:6px}
+.links a,.links span,.links button{font-size:12px;padding:6px 10px;border-radius:9px;background:var(--chip);color:var(--ink);text-decoration:none;border:0;cursor:pointer;font-family:inherit}
+.links a:hover{background:var(--accent);color:var(--accent-ink)}
+.links span{opacity:.4;cursor:default;text-decoration:line-through}
+.warns{margin:0;padding:8px 10px 8px 26px;background:var(--amber-bg);color:var(--amber);border-radius:10px;font-size:12.5px}
+.ladder{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:12px}
+.ladder div{background:var(--chip);border-radius:10px;padding:8px;text-align:center}
+.ladder b{display:block;font:700 13px "JetBrains Mono",monospace;margin-top:2px}
+.ladder .s{color:var(--rose)} .ladder .w{color:var(--lime)}
+.ladder-foot{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted)}
+.failed{margin-top:18px}
+.failed details{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 16px;backdrop-filter:blur(12px)}
 .failed summary{cursor:pointer;font-weight:600}
 .failed li{margin:6px 0;font-size:13.5px}
-.failed .why{color:var(--fail)}
-.empty{color:var(--muted);text-align:center;padding:40px 10px}
-footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
-.theme{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:13px}
-@media (max-width:520px){.stats{grid-template-columns:repeat(2,1fr)} .grid{grid-template-columns:1fr}}
+.failed .why{color:var(--rose)}
+.empty{color:var(--muted);text-align:center;padding:40px 10px;grid-column:1/-1}
+.note{font-size:12.5px;color:var(--muted);margin:16px 0 0;padding:10px 12px;border:1px dashed var(--line);border-radius:12px}
+footer{margin-top:30px;color:var(--muted);font-size:12.5px;text-align:center}
+/* portfolio */
+h2{font:700 18px "Space Grotesk",Inter,sans-serif;margin:24px 0 10px;letter-spacing:.02em}
+.hero{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}
+.hero .big-num{font:700 44px/1 "JetBrains Mono",monospace;letter-spacing:-.02em}
+.hero .sub{color:var(--muted);font-size:12.5px;text-transform:uppercase;letter-spacing:.08em}
+.hero .pl{font:700 20px "JetBrains Mono",monospace;margin-top:8px}
+.curve{height:120px;width:100%;display:block;margin-top:10px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:12px 0}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;backdrop-filter:blur(12px)}
+.tile b{display:block;font:700 20px "JetBrains Mono",monospace}
+.tile span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.tbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}
+.tbar button,.tbar label{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 12px;border-radius:12px;cursor:pointer;font-size:13px;backdrop-filter:blur(12px)}
+.tbar button.main{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600;box-shadow:var(--glow)}
+.tbar button:disabled{opacity:.45;cursor:not-allowed}
+.tbar input[type=file]{display:none}
+.tsub{font-size:12.5px;color:var(--muted);margin:8px 0 0}
+.twrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(12px)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+tr:last-child td{border-bottom:0}
+td.num,th.num{font-family:"JetBrains Mono",monospace;text-align:right;font-size:12.5px}
+table.track{min-width:980px}
+.o-win{color:var(--lime);font-weight:700} .o-loss{color:var(--rose);font-weight:700} .o-open{color:var(--muted)}
+@media (max-width:720px){.controls{grid-template-columns:1fr}.radar{display:none}.hero{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.summary ul{columns:1}.hero .big-num{font-size:34px}}
 </style>
 </head>
 <body>
+<div class="sky"><i></i><i></i><i></i></div>
 <div class="wrap">
   <header>
-    <div>
-      <h1>Flip Scanner</h1>
-      <div class="sub" id="lastinfo">No scan yet</div>
+    <div class="brand">
+      <svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><circle cx="24" cy="24" r="21" stroke="currentColor" stroke-opacity=".35" stroke-width="2"/><circle cx="24" cy="24" r="13" stroke="currentColor" stroke-opacity=".5" stroke-width="2"/><circle cx="24" cy="24" r="4" fill="currentColor"/><path d="M24 24 L41 13" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="33" cy="31" r="3" fill="currentColor" fill-opacity=".8"/></svg>
+      <div><h1>Flip Scanner</h1><div class="sub" id="lastinfo">No scan yet</div></div>
     </div>
-    <button class="theme" id="theme" type="button">Light / dark</button>
+    <div class="hdr-right">
+      <div class="ticker" id="ticker" hidden><span class="pulse"></span><span id="tickertext"></span></div>
+      <button class="theme" id="theme" type="button">Light / dark</button>
+    </div>
   </header>
 
   <section class="panel" id="panel">
     <div class="controls">
-      <div class="group">
-        <span class="label">Scan last</span>
-        <button class="scan" data-h="3">3h</button>
-        <button class="scan" data-h="6">6h</button>
-        <button class="scan" data-h="12">12h</button>
-        <button class="scan" data-h="24">24h</button>
-        <button class="scan" data-h="48">48h</button>
-        <button class="stop" id="stop" type="button">Stop</button>
+      <div class="radar">
+        <svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46" stroke="currentColor" stroke-opacity=".2" stroke-width="2" fill="none"/><circle cx="50" cy="50" r="30" stroke="currentColor" stroke-opacity=".2" stroke-width="1.5" fill="none"/><circle cx="50" cy="50" r="14" stroke="currentColor" stroke-opacity=".2" stroke-width="1.5" fill="none"/><path d="M50 4V96M4 50H96" stroke="currentColor" stroke-opacity=".12"/></svg>
+        <div class="sweep"></div>
+        <div class="pct" id="pct">SCAN</div>
       </div>
-      <div class="group">
-        <span class="label">Sources</span>
-        <label class="src"><input type="checkbox" value="pumpfun" checked> pump.fun</label>
-        <label class="src"><input type="checkbox" value="robinhood" checked> Robinhood</label>
-        <label class="src" title="After each scan, re-check the open paper positions so the portfolio line is current"><input type="checkbox" id="autocheck" checked> Update portfolio after scan</label>
+      <div class="rows">
+        <div class="row">
+          <span class="label">Scan last</span>
+          <button class="scan" data-h="3">3h</button>
+          <button class="scan" data-h="6">6h</button>
+          <button class="scan" data-h="12">12h</button>
+          <button class="scan" data-h="24">24h</button>
+          <button class="scan" data-h="48">48h</button>
+          <button class="stop" id="stop" type="button">Stop</button>
+        </div>
+        <div class="row">
+          <span class="label">Sources</span>
+          <label class="src"><input type="checkbox" value="pumpfun" checked> pump.fun</label>
+          <label class="src"><input type="checkbox" value="robinhood" checked> Robinhood</label>
+          <label class="src" title="After each scan, re-check the open paper positions so the portfolio is current"><input type="checkbox" id="autocheck" checked> Update portfolio after scan</label>
+        </div>
+        <div class="bar"><i id="barfill"></i></div>
+        <div class="status"><span id="statustext">Pick a time window to start a scan. A scan takes about 3 to 5 minutes. Keep this tab open while it runs.</span></div>
       </div>
     </div>
-    <div class="bar"><i id="barfill"></i></div>
-    <div class="status"><span class="spin"></span><span id="statustext">Pick a time window to start a scan. A scan takes about 3 to 5 minutes. Keep this tab open while it runs.</span></div>
-    <div class="paper" id="paper"></div>
   </section>
 
   <div class="views">
     <button data-view="scan" class="on">Latest scan</button>
-    <button data-view="track">Track record <span id="trackcount"></span></button>
+    <button data-view="track">Portfolio <span id="trackcount"></span></button>
   </div>
 
   <div id="scanview">
-  <div class="filters" id="filters">
-    <button data-f="all" class="on">All</button>
-    <button data-f="pumpfun">pump.fun</button>
-    <button data-f="robinhood">Robinhood</button>
-    <button data-f="clean">No warnings only</button>
-    <button data-f="social">Has X or Telegram</button>
-    <button data-f="utility">Says utility</button>
-  </div>
-
-  <div class="summary" id="summary"></div>
-  <div class="grid" id="grid"></div>
-  <div class="failed" id="unchecked"></div>
-  <div class="failed" id="failed"></div>
-  <p class="note">The description, website, X and Telegram links come from the coin's own listing. Anyone can write anything there, and the links can lead to scam sites. Never connect a wallet on a site you reached from this page. The utility or meme label is a rough guess from that text, not a verdict.</p>
+    <div class="filters" id="filters">
+      <button data-f="all" class="on">All</button>
+      <button data-f="pumpfun">pump.fun</button>
+      <button data-f="robinhood">Robinhood</button>
+      <button data-f="clean">No warnings only</button>
+      <button data-f="social">Has X or Telegram</button>
+      <button data-f="utility">Says utility</button>
+      <button data-f="whale">Whale buys</button>
+    </div>
+    <div class="summary" id="summary"></div>
+    <div class="grid" id="grid"></div>
+    <div class="failed" id="unchecked"></div>
+    <div class="failed" id="failed"></div>
+    <p class="note">The description, website, X and Telegram links come from the coin's own listing. Anyone can write anything there, and the links can lead to scam sites. Never connect a wallet on a site you reached from this page. The utility or meme label is a rough guess from that text, not a verdict.</p>
   </div>
 
   <div id="track">
-    <h2>Paper portfolio</h2>
-    <div class="tiles" id="ptiles"></div>
-    <div class="twrap"><table class="baskets" id="baskets"></table></div>
-    <p class="tsub">Pretend you put $250 into every coin the moment it passed a scan, and sold on the plan: half at 2x, the rest at 3x, all of it at -33%. Costs of 3% per round trip are taken off. Each row is a different rule for which coins to buy, so you can see which rule actually works.</p>
-    <h2>Outcomes</h2>
-    <div class="tiles" id="tiles"></div>
+    <div class="hero">
+      <div class="panel">
+        <div class="sub">Paper portfolio, worth now</div>
+        <div class="big-num" id="heroValue">$0</div>
+        <div class="pl" id="heroPl"></div>
+        <div class="tsub" id="heroSub"></div>
+        <svg class="curve" id="curve" viewBox="0 0 600 120" preserveAspectRatio="none" aria-label="Profit curve"></svg>
+      </div>
+      <div class="tiles" id="ptiles" style="margin:0"></div>
+    </div>
     <div class="tbar">
       <button class="main" id="checkbtn" type="button">Check results</button>
       <button id="exportbtn" type="button">Export</button>
@@ -200,16 +246,20 @@ footer{margin-top:28px;color:var(--muted);font-size:12.5px;text-align:center}
       <button id="clearbtn" type="button">Clear all</button>
       <span class="tsub" id="trackstatus"></span>
     </div>
+    <h2>Which rule works?</h2>
+    <div class="twrap"><table class="baskets" id="baskets"></table></div>
+    <p class="tsub">Pretend you put $250 into every coin the moment it passed a scan, then sold on the plan: half at 2x, the rest at 3x, everything at -33%. Costs of 3% per round trip are taken off. Each row is a different rule for which coins to buy.</p>
+    <h2>Every trade</h2>
     <div class="twrap"><table class="track" id="tracktable"></table></div>
-    <p class="tsub">Every coin that passes a scan is logged here with its price at that moment. "Check results" replays the price since then and asks: did the flip plan (half at 2x, rest at 3x, stop at -33%) hit 2x first, or the stop first? The record lives in this browser only. Use Export to move it to another device.</p>
+    <p class="tsub">"Check results" replays the price since each scan with 15-minute candles. If 2x and the stop land in the same candle, the stop counts first. The record lives in this browser only. Use Export to move it to another device, and export now and then as a backup.</p>
   </div>
 
-  <footer>Safety scan only. A pass means no traps were found, not that the price will go up. Not financial advice.</footer>
+  <footer>Safety scan only. A pass means no traps were found, not that the price will go up. Paper money, not advice.</footer>
 </div>
 
 <script>
 "use strict";
-// ---------- rules (same as scan.py / flip_check.py) ----------
+// ---------- rules (same as flip_check.py) ----------
 const GT = "https://api.geckoterminal.com/api/v2/networks";
 const SOURCES = {
   pumpfun: {
@@ -235,12 +285,9 @@ const SOURCES = {
   },
 };
 const PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"; // Pons launch tool on Robinhood Chain
-// Rough label from the creator's own description. Not a verdict, only a hint.
 const UTIL_WORDS = /\b(app|platform|protocol|sdk|api|agent|agents|ai|infra|infrastructure|launchpad|dex|swap|wallet|bot|tool|tools|network|compute|gpu|defi|lending|staking|revenue|buy-?back|burn|fees?|dashboard|browser|game|marketplace|payments?|data|trading|terminal|server)\b/i;
 const MEME_WORDS = /\b(meme|memecoin|dog|doge|cat|kitten|pepe|frog|inu|shib|moon|wif|hat|vibes?|community|lol|cult|based|degen|pump it|to the moon|just a|no utility|for fun|chad|wojak|ape|monkey|bonk|fart|squirrel|hamster|penguin|duck|goat|mascot|ticker is)\b/i;
-const NOT_NEW = new Set(["weth","eth","usdg","usdc","usdt","sol","wsol","wbtc","btc","spy","qqq","nvda","tsla",
-  "aapl","msft","amzn","goog","googl","meta","hood","coin","gme","amc","pltr","mstr"]);
-// Names that borrow fame. Edit freely.
+const NOT_NEW = new Set(["weth","eth","usdg","usdc","usdt","sol","wsol","wbtc","btc","spy","qqq","nvda","tsla","aapl","msft","amzn","goog","googl","meta","hood","coin","gme","amc","pltr","mstr"]);
 const FAME = /\b(elon|musk|trump|melania|barron|cz|binance|saylor|vitalik|kanye|ye|drake|taylor|swift|ibm|google|gemini|grok|openai|chatgpt|gpt|claude|anthropic|apple|tesla|nvidia|microsoft|amazon|meta|facebook|robinhood|mercedes|bmw|ferrari|nike|disney|pepsi|coca|starbucks|spacex|x|twitter|united states|usa|official|government|federal|fed|dividend|etf)\b/i;
 const POOL_WORDS = /pool|amm|vault|lock|escrow|streamflow|meteora|raydium|pump fun amm|pumpswap/i;
 const RH_CHAIN_ID = "4663";
@@ -248,10 +295,15 @@ const RH_POOL_MANAGER = "0x8366a39cc670b4001a1121b8f6a443a643e40951"; // Uniswap
 const RH_LOCKERS = {"0x267444d099b10fb5ed7c3cc7b7c767adca574952": "Pons launch locker"};
 const BURN = new Set(["0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"]);
 const PAUSE = 7000; // between GeckoTerminal calls; the free limit is strict
+const WHALE = 5000; // a single buy this big gets the whale badge
 
 // ---------- helpers ----------
+const $ = s => document.querySelector(s);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const num = x => { const n = parseFloat(x); return Number.isFinite(n) ? n : 0; };
+const sum = a => a.reduce((x, y) => x + y, 0);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const safeUrl = u => (typeof u === "string" && /^https?:\/\//i.test(u)) ? u : null;
 async function getJSON(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error("HTTP " + r.status);
@@ -260,28 +312,34 @@ async function getJSON(url) {
 }
 function money(x) {
   x = Number(x) || 0;
-  if (x >= 1e6) return "$" + (x / 1e6).toFixed(2) + "M";
-  if (x >= 1e3) return "$" + (x / 1e3).toFixed(1) + "K";
-  if (x >= 1) return "$" + x.toFixed(2);
-  if (x <= 0) return "$0";
-  let d = 2; while (x < Math.pow(10, -(d - 2)) && d < 14) d++;
-  return "$" + x.toFixed(d);
+  const neg = x < 0; x = Math.abs(x);
+  let s;
+  if (x >= 1e6) s = "$" + (x / 1e6).toFixed(2) + "M";
+  else if (x >= 1e3) s = "$" + (x / 1e3).toFixed(1) + "K";
+  else if (x >= 1) s = "$" + x.toFixed(2);
+  else if (x === 0) s = "$0";
+  else { let d = 2; while (x < Math.pow(10, -(d - 2)) && d < 14) d++; s = "$" + x.toFixed(d); }
+  return neg ? "-" + s : s;
 }
+const pct = x => { x = Number(x) || 0; const v = Math.abs(x) >= 1000 ? Math.round(x).toLocaleString("en-US") : Math.abs(x) >= 100 ? x.toFixed(0) : x.toFixed(1); return `<b class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : ""}${v}%</b>`; };
+const pctTxt = x => (x >= 0 ? "+" : "") + x.toFixed(1) + "%";
+const count = n => { n = Number(n) || 0; return n >= 10000 ? (n / 1000).toFixed(0) + "K" : n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n); };
+const ago = iso => { const m = Math.round((Date.now() - new Date(iso)) / 60000); return m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m ago` : `${Math.floor(m / 1440)} days ago`; };
+const dur = ms => { const h = ms / 3.6e6; return h < 1 ? `${Math.round(h * 60)} min` : h < 48 ? `${h.toFixed(1)} h` : `${(h / 24).toFixed(1)} days`; };
+const when = iso => new Date(iso).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
 function sameSizeGroup(pcts) {
   const s = [...pcts].sort((a, b) => b - a);
   let best = [];
   for (const top of s) {
     const grp = s.filter(x => top - x >= 0 && top - x <= 0.1);
-    if (grp.length >= 3 && grp.reduce((a, b) => a + b, 0) > best.reduce((a, b) => a + b, 0)) best = grp;
+    if (grp.length >= 3 && sum(grp) > sum(best)) best = grp;
   }
   return best;
 }
-const sum = a => a.reduce((x, y) => x + y, 0);
 
 // ---------- step 1: pool lists ----------
 let scanRun = {stopped: false};
 function checkStop() { if (scanRun.stopped) throw new Error("Stopped by you"); }
-
 async function getJSONSlow(url, say) {
   try { return await getJSON(url); }
   catch (e) {
@@ -292,7 +350,6 @@ async function getJSONSlow(url, say) {
     return await getJSON(url);
   }
 }
-
 async function fetchPools(src, hours, say) {
   const seen = new Map();
   let planned = 0, read = 0;
@@ -324,7 +381,6 @@ function prefilter(pools, hours, L) {
   }
   const symCount = {};
   for (const [p] of recent) { const s = p.attributes.name.split(" / ")[0].trim().toLowerCase(); symCount[s] = (symCount[s] || 0) + 1; }
-
   const keep = {}, dropped = {}, seen = new Set();
   for (const [p, ageH] of recent) {
     const a = p.attributes;
@@ -360,7 +416,6 @@ async function findPair(token, chain) {
   if (!Array.isArray(pairs) || !pairs.length) return null;
   return pairs.reduce((a, b) => (((b.liquidity || {}).usd || 0) > ((a.liquidity || {}).usd || 0) ? b : a));
 }
-
 async function solanaSafety(token, pairAddr, F, W, N) {
   let r;
   try { r = await getJSON(`https://api.rugcheck.xyz/v1/tokens/${token}/report`); } catch (e) { r = null; }
@@ -413,7 +468,6 @@ async function solanaSafety(token, pairAddr, F, W, N) {
   if (supply && cb / supply * 100 > 5) F.push(`Creator still holds ${(cb / supply * 100).toFixed(1)}%`);
   N.holders = r.totalHolders;
 }
-
 async function robinhoodSafety(token, pairAddr, F, W, N) {
   let d;
   try { d = await getJSON(`https://api.gopluslabs.io/api/v1/token_security/${RH_CHAIN_ID}?contract_addresses=${token}`); } catch (e) { d = {}; }
@@ -432,10 +486,10 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   const tok = token.toLowerCase(), pair = (pairAddr || "").toLowerCase();
   const top = [], contracts = [];
   for (const h of (r.holders || []).slice(0, 10)) {
-    const a = h.address.toLowerCase(), pct = num(h.percent) * 100;
+    const a = h.address.toLowerCase(), p = num(h.percent) * 100;
     if (BURN.has(a) || a === RH_POOL_MANAGER || a === tok || a === pair || RH_LOCKERS[a] || h.is_locked === 1) continue;
-    top.push(pct);
-    if (h.is_contract === 1) contracts.push(`${a.slice(0, 8)}.. ${pct.toFixed(1)}%`);
+    top.push(p);
+    if (h.is_contract === 1) contracts.push(`${a.slice(0, 8)}.. ${p.toFixed(1)}%`);
   }
   const t10 = sum(top);
   if (t10 > 30) F.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`); else N.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`);
@@ -452,7 +506,6 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   else W.push("Pool lock unknown: not a Pons launch, and GoPlus cannot see Uniswap V4 pools");
   N.holders = r.holder_count;
 }
-
 async function check(p) {
   const chain = p.chainId, b = p.baseToken;
   const liq = (p.liquidity || {}).usd || 0;
@@ -472,7 +525,6 @@ async function check(p) {
   if (chain === "solana") { await solanaSafety(b.address, p.pairAddress, F, W, N); bubblemap = `https://app.bubblemaps.io/sol/token/${b.address}`; }
   else if (chain === "robinhood") await robinhoodSafety(b.address, p.pairAddress, F, W, N);
   else W.push(`Chain ${chain} not covered: safety check skipped`);
-
   const info = p.info || {};
   const soc = {x: null, telegram: null, website: null, image: info.imageUrl || null};
   for (const s of info.socials || []) {
@@ -481,7 +533,6 @@ async function check(p) {
     else if (kind === "telegram" && !soc.telegram) soc.telegram = url;
   }
   if ((info.websites || []).length) soc.website = info.websites[0].url;
-
   return {
     symbol: b.symbol, name: b.name, chain, token: b.address, pair: p.pairAddress,
     verdict: F.length ? "FAIL" : N.unchecked ? "NOT CHECKED" : (W.length ? "PASS WITH WARNINGS" : "PASS"),
@@ -493,7 +544,7 @@ async function check(p) {
   };
 }
 
-// ---------- step 4: what the coin says it is ----------
+// ---------- step 4: what the coin says it is, and who is buying ----------
 const decode = s => { const t = document.createElement("textarea"); t.innerHTML = s || ""; return t.value; };
 function labelFor(desc, categories, hasWebsite) {
   const text = `${desc} ${(categories || []).join(" ")}`;
@@ -506,27 +557,6 @@ function labelFor(desc, categories, hasWebsite) {
   if (meme && util) return "Meme with a utility claim";
   return "Unclear";
 }
-// Big trades (over $1K) in the last 24h, with the wallets behind them.
-async function addBigTrades(c, src, say) {
-  c.big = null;
-  if (!c.pair) return;
-  let d;
-  try { d = await getJSONSlow(`${GT}/${src.network}/pools/${c.pair}/trades?trade_volume_in_usd_greater_than=1000`, say); }
-  catch (e) { return; }
-  const since = Date.now() - 864e5;
-  const big = {buys: 0, buyUsd: 0, sells: 0, sellUsd: 0, wallets: new Set(), top: null};
-  for (const t of d.data || []) {
-    const a = t.attributes || {};
-    if (Date.parse(a.block_timestamp) < since) continue;
-    const usd = num(a.volume_in_usd), kind = a.kind === "buy" ? "buy" : "sell";
-    if (kind === "buy") { big.buys++; big.buyUsd += usd; } else { big.sells++; big.sellUsd += usd; }
-    if (a.tx_from_address) big.wallets.add(a.tx_from_address);
-    if (!big.top || usd > big.top.usd) big.top = {usd, kind, wallet: a.tx_from_address || "", time: a.block_timestamp};
-  }
-  big.wallets = big.wallets.size;
-  c.big = big;
-}
-
 async function addInfo(c, src, say) {
   let a;
   try { a = (await getJSONSlow(`${GT}/${src.network}/tokens/${c.token}/info`, say)).data.attributes; }
@@ -539,6 +569,28 @@ async function addInfo(c, src, say) {
   if (!c.holders && a.holders && a.holders.count) c.holders = a.holders.count;
   c.gt_score = a.gt_score ? Math.round(num(a.gt_score)) : null;
   c.label = labelFor(c.desc, a.categories, !!c.website);
+}
+// Big trades (over $1K) in the last 24h, with the wallets behind them.
+async function addBigTrades(c, src, say) {
+  c.big = null;
+  if (!c.pair) return;
+  let d;
+  try { d = await getJSONSlow(`${GT}/${src.network}/pools/${c.pair}/trades?trade_volume_in_usd_greater_than=1000`, say); }
+  catch (e) { return; }
+  const since = Date.now() - 864e5;
+  const big = {buys: 0, buyUsd: 0, sells: 0, sellUsd: 0, wallets: new Set(), buyers: {}, top: null};
+  for (const t of d.data || []) {
+    const a = t.attributes || {};
+    if (Date.parse(a.block_timestamp) < since) continue;
+    const usd = num(a.volume_in_usd), kind = a.kind === "buy" ? "buy" : "sell", w = a.tx_from_address || "";
+    if (kind === "buy") { big.buys++; big.buyUsd += usd; if (w) big.buyers[w] = (big.buyers[w] || 0) + usd; }
+    else { big.sells++; big.sellUsd += usd; }
+    if (w) big.wallets.add(w);
+    if (!big.top || usd > big.top.usd) big.top = {usd, kind, wallet: w, time: a.block_timestamp};
+  }
+  big.wallets = big.wallets.size;
+  big.buyers = Object.entries(big.buyers).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([w, usd]) => ({w, usd: Math.round(usd)}));
+  c.big = big;
 }
 
 // ---------- the scan ----------
@@ -590,45 +642,40 @@ async function runScan(hours, chains, say, progress, onSource) {
   return result;
 }
 
-// ---------- page ----------
-const $ = s => document.querySelector(s);
+// ---------- scan view ----------
 let filter = "all", data = null, running = false;
-
 try { const t = localStorage.getItem("flipTheme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 $("#theme").onclick = () => {
-  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const cur = document.documentElement.dataset.theme || "dark";
   const next = cur === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next;
   try { localStorage.setItem("flipTheme", next); } catch (e) {}
 };
-
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const safeUrl = u => (typeof u === "string" && /^https?:\/\//i.test(u)) ? u : null;
-const pct = x => { x = Number(x) || 0; const v = Math.abs(x) >= 1000 ? Math.round(x).toLocaleString("en-US") : Math.abs(x) >= 100 ? x.toFixed(0) : x.toFixed(1); return `<b class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : ""}${v}%</b>`; };
-const count = n => { n = Number(n) || 0; return n >= 10000 ? (n / 1000).toFixed(0) + "K" : n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n); };
-const ago = iso => { const m = Math.round((Date.now() - new Date(iso)) / 60000); return m < 60 ? `${m} min ago` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m ago` : `${Math.floor(m / 1440)} days ago`; };
 const link = (label, url) => { const u = safeUrl(url); return u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${label}</a>` : `<span>${label}</span>`; };
+const isWhale = c => c.big && c.big.top && c.big.top.kind === "buy" && c.big.top.usd >= WHALE;
 
 function cardHtml(c, srcKey) {
   const initials = esc(String(c.symbol || "?").slice(0, 2));
   const img = safeUrl(c.image) ? `<img class="logo" src="${esc(c.image)}" alt="" data-initials="${initials}">` : `<div class="logo">${initials}</div>`;
-  const verdict = c.verdict === "PASS" ? `<span class="badge b-pass">PASS</span>`
-    : `<span class="badge b-warn">PASS + ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
+  const verdict = c.verdict === "PASS" ? `<span class="badge b-pass">Pass</span>`
+    : `<span class="badge b-warn">Pass, ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
   const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : `<span class="badge b-rh">Robinhood</span>`;
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
+  const tot = (c.buys24 || 0) + (c.sells24 || 0);
+  const buyShare = tot ? c.buys24 / tot * 100 : 50;
+  const pressure = `<div class="pressure"><div class="track"><i style="width:${buyShare.toFixed(0)}%"></i></div>
+    <div class="legend"><span>${count(c.buys24)} buys</span><span>${buyShare.toFixed(0)}% buy pressure, 24h</span><span>${count(c.sells24)} sells</span></div></div>`;
   let bigHtml = "";
   if (c.big) {
     const b = c.big, net = b.buyUsd - b.sellUsd;
     const top = b.top ? ` Biggest: ${b.top.kind} ${money(b.top.usd)} at ${new Date(b.top.time).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}${b.top.wallet ? ` by ${esc(b.top.wallet.slice(0, 4))}..${esc(b.top.wallet.slice(-4))}` : ""}.` : "";
-    bigHtml = `<div class="big"><span class="h">Big trades over $1K, last 24h</span>
-      ${b.buys + b.sells ? `<b class="${net >= 0 ? "up" : "down"}">${b.buys} buys ${money(b.buyUsd)} / ${b.sells} sells ${money(b.sellUsd)}</b> from ${b.wallets} wallet${b.wallets === 1 ? "" : "s"}.${top}` : "None. Only small trades so far."}</div>`;
+    bigHtml = `<div class="big">${isWhale(c) ? `<span class="whale" title="A single buy over $5K">🐋</span>` : ""}<div><span class="h">Big trades over $1K, last 24h</span>
+      ${b.buys + b.sells ? `<b class="${net >= 0 ? "up" : "down"}">${b.buys} buys ${money(b.buyUsd)} / ${b.sells} sells ${money(b.sellUsd)}</b> from ${b.wallets} wallet${b.wallets === 1 ? "" : "s"}.${top}` : "None. Only small trades so far."}</div></div>`;
   }
   const labelClass = /utility/.test(c.label || "") && !/meme/i.test(c.label || "") ? "l-util" : /meme/i.test(c.label || "") ? "l-meme" : "l-none";
-  const about = `<div class="about">
-      <span class="lbl ${labelClass}">${esc(c.label || "Not read")}</span>${c.gt_score ? `<span class="lbl l-none" title="GeckoTerminal trust score">GT score ${c.gt_score}</span>` : ""}
-      <p>${c.desc ? esc(c.desc) : "<i>The creator wrote no description.</i>"}</p>
-    </div>`;
-  return `<article class="card">
+  const about = `<div class="about"><span class="lbl ${labelClass}">${esc(c.label || "Not read")}</span>${c.gt_score ? `<span class="lbl l-none" title="GeckoTerminal trust score">GT score ${c.gt_score}</span>` : ""}
+      <p>${c.desc ? esc(c.desc) : "<i>The creator wrote no description.</i>"}</p></div>`;
+  return `<article class="card ${c.verdict === "PASS" ? "v-pass" : "v-warn"}">
     <div class="top">${img}
       <div class="title"><div class="sym">${esc(c.symbol)}</div><div class="name">${esc(c.name)}</div></div>
       <div class="badges">${verdict}${chain}</div>
@@ -640,30 +687,29 @@ function cardHtml(c, srcKey) {
       <div class="stat"><b>${money(c.vol24)}</b><span>Vol 24h</span></div>
       <div class="stat"><b>${c.age_h}h</b><span>Age</span></div>
       <div class="stat"><b>${c.holders ? count(c.holders) : "?"}</b><span>Holders</span></div>
-      <div class="stat"><b>${count(c.buys24)}/${count(c.sells24)}</b><span>Buys/sells 24h</span></div>
       <div class="stat">${pct(c.chg1)}<span>1h</span></div>
       <div class="stat">${pct(c.chg24)}<span>24h</span></div>
+      <div class="stat"><b>${money(c.plan.max_bet)}</b><span>Max bet</span></div>
+    </div>
+    ${pressure}
+    ${bigHtml}
+    ${warns}
+    <div class="ladder-foot"><span>Flip plan from ${money(c.price)}</span><span>Time stop 24 to 48h</span></div>
+    <div class="ladder">
+      <div class="s">Stop -33%<b>${money(c.plan.stop)}</b></div>
+      <div class="w">Sell half at 2x<b>${money(c.plan.x2)}</b></div>
+      <div class="w">Sell rest at 3x<b>${money(c.plan.x3)}</b></div>
     </div>
     <div class="links">
       ${link("Chart", c.chart)}${link("X", c.x)}${link("Telegram", c.telegram)}${link("Website", c.website)}${c.bubblemap ? link("Bubble map", c.bubblemap) : ""}
       <button type="button" data-copy="${esc(c.token)}">Copy address</button>
     </div>
-    ${bigHtml}
-    ${warns}
-    <div class="plan">
-      <div class="h">Flip plan from ${money(c.price)}</div>
-      <div>Half at 2x: <b>${money(c.plan.x2)}</b></div>
-      <div>Rest at 3x: <b>${money(c.plan.x3)}</b></div>
-      <div>Stop-loss: <b>${money(c.plan.stop)}</b></div>
-      <div>Max bet: <b>${money(c.plan.max_bet)}</b></div>
-    </div>
   </article>`;
 }
-
 function render() {
   const r = data;
   if (!r) { $("#grid").innerHTML = `<div class="empty">No results yet. Press a scan button above.</div>`; return; }
-  $("#lastinfo").textContent = r.finished ? `Last scan: last ${r.hours}h window, finished ${ago(r.finished)}` : `Scanning the last ${r.hours}h...`;
+  $("#lastinfo").textContent = r.finished ? `Last scan: ${r.hours}h window, finished ${ago(r.finished)}` : `Scanning the last ${r.hours}h...`;
   document.querySelectorAll("button.scan").forEach(b => b.classList.toggle("last", Number(b.dataset.h) === r.hours));
   $("#summary").innerHTML = r.sources.map(s => `<div class="panel">
       <h3>${esc(s.label)}: ${s.passed.length} passed</h3>
@@ -674,8 +720,8 @@ function render() {
   r.sources.forEach(s => s.passed.forEach(c => cards.push([c, s.key])));
   cards = cards.filter(([c, k]) => filter === "all" || filter === k ||
     (filter === "clean" && c.verdict === "PASS") || (filter === "social" && (safeUrl(c.x) || safeUrl(c.telegram))) ||
-    (filter === "utility" && /utility/.test(c.label || "")));
-  $("#grid").innerHTML = cards.length ? cards.map(([c, k]) => cardHtml(c, k)).join("")
+    (filter === "utility" && /utility/.test(c.label || "")) || (filter === "whale" && isWhale(c)));
+  $("#grid").innerHTML = cards.length ? cards.map(([c, k], i) => cardHtml(c, k).replace('<article class="card', `<article style="animation-delay:${i * 60}ms" class="card`)).join("")
     : `<div class="empty">${r.finished ? "No coins match this filter." : "Coins will show here as each source finishes."}</div>`;
   const list = (items, title, why) => items.length ? `<details><summary>${title} (${items.length})</summary><ul>
       ${items.map(([c, l]) => `<li><b>${esc(c.symbol)}</b> <span class="sub">${esc(l)}</span>: <span class="why">${esc(why(c))}</span> ${safeUrl(c.chart) ? `<a href="${esc(c.chart)}" target="_blank" rel="noopener noreferrer">chart</a>` : ""}</li>`).join("")}
@@ -686,16 +732,15 @@ function render() {
     const d = document.createElement("div"); d.className = "logo"; d.textContent = img.dataset.initials; img.replaceWith(d);
   });
 }
-
 function setRunning(on) {
   running = on;
   $("#panel").classList.toggle("running", on);
   document.querySelectorAll("button.scan").forEach(b => b.disabled = on);
+  if (!on) $("#pct").textContent = "SCAN";
 }
-
 document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
   if (running) return;
-  const chains = [...document.querySelectorAll(".src input:checked")].map(i => i.value);
+  const chains = [...document.querySelectorAll(".src input[value]:checked")].map(i => i.value);
   if (!chains.length) { $("#statustext").textContent = "Pick at least one source."; return; }
   const hours = Number(b.dataset.h);
   setRunning(true);
@@ -704,7 +749,7 @@ document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
   try {
     const res = await runScan(hours, chains,
       m => $("#statustext").textContent = m,
-      f => $("#barfill").style.width = (f * 100).toFixed(0) + "%",
+      f => { $("#barfill").style.width = (f * 100).toFixed(0) + "%"; $("#pct").textContent = (f * 100).toFixed(0) + "%"; },
       partial => { data = {...partial}; render(); });
     data = res; render();
     try { localStorage.setItem("flipLastScan", JSON.stringify(res)); } catch (e) {}
@@ -713,7 +758,6 @@ document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
     $("#statustext").textContent = `Scan finished: ${passed} coin${passed === 1 ? "" : "s"} passed. ${added} new coin${added === 1 ? "" : "s"} added to the paper portfolio.`;
     renderPaper();
     if ($("#autocheck").checked && Object.values(track).some(e => !e.final && Date.parse(e.logged) < Date.now() - 3600e3)) {
-      $("#statustext").textContent += " Updating the paper portfolio...";
       await checkResults(true);
       $("#statustext").textContent = `Scan finished: ${passed} passed, ${added} new. Paper portfolio updated.`;
     }
@@ -723,24 +767,21 @@ document.querySelectorAll("button.scan").forEach(b => b.onclick = async () => {
   } finally { setRunning(false); }
 });
 $("#stop").onclick = () => { scanRun.stopped = true; $("#statustext").textContent = "Stopping after the current step..."; };
-
 document.querySelectorAll("#filters button").forEach(b => b.onclick = () => {
   filter = b.dataset.f;
   document.querySelectorAll("#filters button").forEach(x => x.classList.toggle("on", x === b));
   render();
 });
-
 document.addEventListener("click", e => {
   const b = e.target.closest("button[data-copy]");
   if (!b) return;
   navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy address", 1500); });
 });
-
 window.addEventListener("beforeunload", e => { if (running) { e.preventDefault(); e.returnValue = ""; } });
 
-// ---------- track record ----------
-// One entry per coin: price at the first scan it passed, then what happened since.
-const STOP = 0.67;
+// ---------- track record and paper portfolio ----------
+// One entry per coin: a $250 paper buy at the first scan it passed, then what happened since.
+const STOP = 0.67, PAPER = 250, COST = 0.03;
 let track = {};
 try { track = JSON.parse(localStorage.getItem("flipTrack") || "{}"); } catch (e) { track = {}; }
 function saveTrack() { try { localStorage.setItem("flipTrack", JSON.stringify(track)); } catch (e) {} updateTrackCount(); }
@@ -760,33 +801,32 @@ function logPassed(res) {
         age_h: c.age_h, holders: c.holders, buys24: c.buys24, sells24: c.sells24, vol24: c.vol24,
         chg1: c.chg1, chg24: c.chg24, gt_score: c.gt_score || null, warnings: c.warns.slice(0, 6),
         hasX: !!safeUrl(c.x), hasTg: !!safeUrl(c.telegram), hasWeb: !!safeUrl(c.website),
-        bigBuys: b.buys || 0, bigBuyUsd: Math.round(b.buyUsd || 0), bigSells: b.sells || 0, bigSellUsd: Math.round(b.sellUsd || 0), bigWallets: b.wallets || 0,
+        bigBuys: b.buys || 0, bigBuyUsd: Math.round(b.buyUsd || 0), bigSells: b.sells || 0, bigSellUsd: Math.round(b.sellUsd || 0),
+        bigWallets: b.wallets || 0, bigBuyers: b.buyers || [], whale: !!isWhale(c),
         hourUtc: new Date().getUTCHours(), weekday: new Date().getUTCDay(), window: res.hours,
       },
-      now: null, liq: null, best: null, outcome: "Open", final: false, checked: null,
+      now: null, liq: null, best: null, bestT: null, t2: null, exit: null, outcome: "Open", final: false, checked: null,
     };
     added++;
   }
   if (added) saveTrack();
   return added;
 }
-
 // Replay candles since the scan. Conservative: if 2x and the stop land in the same candle, the stop counts first.
 function replay(candles, price0) {
   const stop = price0 * STOP, x2 = price0 * 2, x3 = price0 * 3;
-  let best = 0, hit2 = false, hit3 = false, stopped = false, done = false;
-  for (const [, , high, low] of candles) {
-    best = Math.max(best, high / price0); // the full move, even after the plan is out
+  let best = 0, bestT = null, hit2 = false, hit3 = false, stopped = false, done = false, t2 = null, t3 = null, tStop = null;
+  for (const [t, , high, low] of candles) {
+    if (high / price0 > best) { best = high / price0; bestT = t; } // the full move, even after the plan is out
     if (done) continue;
     if (!hit2) {
-      if (low <= stop) { stopped = true; done = true; continue; }
-      if (high >= x2) hit2 = true;
+      if (low <= stop) { stopped = true; tStop = t; done = true; continue; }
+      if (high >= x2) { hit2 = true; t2 = t; }
     }
-    if (hit2 && high >= x3) { hit3 = true; done = true; }
+    if (hit2 && high >= x3) { hit3 = true; t3 = t; done = true; }
   }
-  return {best, hit2, hit3, stopped};
+  return {best, bestT, hit2, hit3, stopped, t2, t3, tStop};
 }
-
 function planResult(e) {
   // What the plan would have made, as a multiple of the money put in.
   if (e.outcome === "Stop hit") return STOP;
@@ -795,6 +835,9 @@ function planResult(e) {
   if (e.outcome === "Dead") return 0;
   return e.now && e.price0 ? e.now / e.price0 : 1;
 }
+const positionValue = e => e.checked ? PAPER * planResult(e) * (1 - COST) : PAPER;
+const tradePnl = e => positionValue(e) - PAPER;
+const exitTime = e => e.exit ? e.exit * 1000 : null;
 
 async function checkResults(quiet) {
   const entries = Object.values(track);
@@ -807,13 +850,11 @@ async function checkResults(quiet) {
     for (let i = 0; i < todo.length; i++) {
       const e = todo[i];
       say(`Checking ${i + 1} of ${todo.length} (${e.symbol})`);
-      // Where is the price now?
       try {
         const pairs = await getJSON(`https://api.dexscreener.com/token-pairs/v1/${e.chain}/${e.token}`);
         const p = Array.isArray(pairs) && pairs.length ? pairs.reduce((a, b) => (((b.liquidity || {}).usd || 0) > ((a.liquidity || {}).usd || 0) ? b : a)) : null;
         if (p) { e.now = num(p.priceUsd); e.liq = (p.liquidity || {}).usd || 0; } else { e.now = 0; e.liq = 0; }
       } catch (err) { /* keep old numbers */ }
-      // What did the price do since the scan?
       const ageDays = (Date.now() - Date.parse(e.logged)) / 864e5;
       const net = e.chain === "solana" ? "solana" : "robinhood";
       const tf = ageDays <= 10 ? "minute?aggregate=15&limit=1000" : "hour?limit=1000";
@@ -824,12 +865,13 @@ async function checkResults(quiet) {
         const after = candles.filter(c => c[0] >= since - 900).sort((a, b) => a[0] - b[0]);
         if (after.length) {
           const r = replay(after, e.price0);
-          e.best = r.best;
+          e.best = r.best; e.bestT = r.bestT; e.t2 = r.t2;
           e.outcome = r.hit3 ? "3x hit" : r.hit2 ? "2x hit" : r.stopped ? "Stop hit" : "Open";
+          e.exit = r.hit3 ? r.t3 : r.stopped ? r.tStop : null;
         }
       } catch (err) { say(`${e.symbol}: no candles yet`); }
-      if (e.outcome === "Open" && ((e.liq !== null && e.liq < 1000) || (e.now !== null && e.price0 && e.now / e.price0 < 0.1))) e.outcome = "Dead";
-      if (e.outcome === "3x hit" || e.outcome === "Stop hit" || e.outcome === "Dead" || ageDays > 14) e.final = true;
+      if (e.outcome === "Open" && ((e.liq !== null && e.liq < 1000) || (e.now !== null && e.price0 && e.now / e.price0 < 0.1))) { e.outcome = "Dead"; e.exit = Math.floor(Date.now() / 1000); }
+      if (e.outcome === "3x hit" || e.outcome === "Stop hit" || e.outcome === "Dead" || ageDays > 14) { e.final = true; if (!e.exit) e.exit = Math.floor(Date.now() / 1000); }
       e.checked = new Date().toISOString();
       saveTrack(); renderTrack();
       await sleep(PAUSE);
@@ -841,87 +883,114 @@ async function checkResults(quiet) {
   } finally { btn.disabled = false; }
 }
 
-// ---------- paper portfolio ----------
-const PAPER = 250, COST = 0.03;
-const positionValue = e => e.checked ? PAPER * planResult(e) * (1 - COST) : PAPER;
 const BASKETS = [
   ["All passed coins", () => true],
   ["No warnings only", e => e.warns === 0],
   ["pump.fun only", e => e.source === "pumpfun"],
   ["Robinhood only", e => e.source === "robinhood"],
   ["Says utility only", e => /utility/.test(e.label || "")],
+  ["Whale buy seen", e => !!(e.features || {}).whale],
   ["Big buys beat big sells", e => (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
   ["Has X or Telegram", e => (e.features || {}).hasX || (e.features || {}).hasTg],
 ];
 function portfolio(es) {
-  const invested = es.length * PAPER, value = es.reduce((n, e) => n + positionValue(e), 0);
+  const invested = es.length * PAPER, value = sum(es.map(positionValue));
   return {n: es.length, invested, value, pnl: value - invested, pct: invested ? (value / invested - 1) * 100 : 0,
     closed: es.filter(e => e.final).length, open: es.filter(e => !e.final).length, unchecked: es.filter(e => !e.checked).length};
 }
-const signed = (x, suffix = "") => (x >= 0 ? "+" : "-") + money(Math.abs(x)).replace("$", "$") + suffix;
-const pctTxt = x => (x >= 0 ? "+" : "") + x.toFixed(1) + "%";
+const signed = x => (x >= 0 ? "+" : "-") + money(Math.abs(x));
 function renderPaper() {
   const es = Object.values(track);
+  const t = $("#ticker");
+  if (!es.length) { t.hidden = true; return; }
   const p = portfolio(es);
-  const strip = $("#paper");
-  if (!es.length) { strip.innerHTML = ""; return; }
-  strip.innerHTML = `<span class="h">Paper portfolio, $${PAPER} per passed coin</span>
-    <span>${p.n} coins</span><span>in: <b>${money(p.invested)}</b></span><span>now: <b>${money(p.value)}</b></span>
-    <span class="${p.pnl >= 0 ? "up" : "down"}"><b>${signed(p.pnl)} (${pctTxt(p.pct)})</b></span>
-    <span>${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} not checked yet` : ""}</span>`;
+  t.hidden = false;
+  $("#tickertext").innerHTML = `Paper: <b>${money(p.value)}</b> <b class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</b> · ${p.n} trades`;
 }
-
+function countUp(el, target, fmt) {
+  const start = performance.now(), from = Number(el.dataset.v || 0);
+  el.dataset.v = target;
+  const step = now => { const k = Math.min(1, (now - start) / 700), v = from + (target - from) * (1 - Math.pow(1 - k, 3)); el.textContent = fmt(v); if (k < 1) requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+}
+function drawCurve(es) {
+  const svg = $("#curve");
+  const pts = [];
+  let run = 0;
+  const closed = es.filter(e => e.final && e.exit).sort((a, b) => a.exit - b.exit);
+  for (const e of closed) { run += tradePnl(e); pts.push(run); }
+  const openPnl = sum(es.filter(e => !e.final && e.checked).map(tradePnl));
+  if (openPnl) pts.push(run + openPnl);
+  if (pts.length < 2) pts.unshift(0);
+  if (pts.length < 2) { svg.innerHTML = ""; return; }
+  const min = Math.min(0, ...pts), max = Math.max(0, ...pts), span = (max - min) || 1;
+  const X = i => (i / (pts.length - 1)) * 600, Y = v => 110 - ((v - min) / span) * 100;
+  const d = pts.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" ");
+  const last = pts[pts.length - 1], color = last >= 0 ? "var(--lime)" : "var(--rose)";
+  svg.innerHTML = `<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".35"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    <line x1="0" x2="600" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="currentColor" stroke-opacity=".15" stroke-dasharray="4 4"/>
+    <path d="${d} L600 120 L0 120 Z" fill="url(#g)"/><path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>
+    <circle cx="600" cy="${Y(last).toFixed(1)}" r="4" fill="${color}"/>`;
+}
 function renderTrack() {
   const es = Object.values(track).sort((a, b) => Date.parse(b.logged) - Date.parse(a.logged));
   updateTrackCount(); renderPaper();
-  const pAll = portfolio(es);
-  $("#ptiles").innerHTML = `
-    <div class="tile"><b>${money(pAll.invested)}</b><span>Put in (${pAll.n} coins x $${PAPER})</span></div>
-    <div class="tile"><b>${money(pAll.value)}</b><span>Worth now</span></div>
-    <div class="tile"><b class="${pAll.pnl >= 0 ? "o-win" : "o-loss"}">${es.length ? signed(pAll.pnl) : "-"}</b><span>Profit or loss</span></div>
-    <div class="tile"><b class="${pAll.pnl >= 0 ? "o-win" : "o-loss"}">${es.length ? pctTxt(pAll.pct) : "-"}</b><span>Return</span></div>
-    <div class="tile"><b>${pAll.closed} / ${pAll.open}</b><span>Closed / open positions</span></div>`;
-  $("#baskets").innerHTML = `<tr><th>Rule</th><th class="num">Coins</th><th class="num">Put in</th><th class="num">Worth now</th><th class="num">Return</th><th class="num">Hit 2x</th><th class="num">Stopped or dead</th></tr>` +
+  const p = portfolio(es);
+  countUp($("#heroValue"), p.value, v => money(v));
+  $("#heroPl").innerHTML = es.length ? `<span class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</span> <span class="tsub">on ${money(p.invested)} put in</span>` : "Run a scan. Every coin that passes becomes a $250 paper trade.";
+  $("#heroSub").textContent = es.length ? `${p.n} trades: ${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} not checked yet` : ""}` : "";
+  drawCurve(es);
+  const closed = es.filter(e => e.final && e.checked);
+  const wins = closed.filter(e => tradePnl(e) > 0), losses = closed.filter(e => tradePnl(e) <= 0);
+  const avg = a => a.length ? sum(a.map(tradePnl)) / a.length : 0;
+  const pf = losses.length && sum(losses.map(tradePnl)) ? sum(wins.map(tradePnl)) / Math.abs(sum(losses.map(tradePnl))) : (wins.length ? Infinity : 0);
+  const best = closed.length ? closed.reduce((a, b) => tradePnl(b) > tradePnl(a) ? b : a) : null;
+  const worst = closed.length ? closed.reduce((a, b) => tradePnl(b) < tradePnl(a) ? b : a) : null;
+  const holds = closed.filter(e => e.exit).map(e => exitTime(e) - Date.parse(e.logged));
+  const tile = (v, l, cls = "") => `<div class="tile"><b class="${cls}">${v}</b><span>${l}</span></div>`;
+  $("#ptiles").innerHTML =
+    tile(closed.length ? Math.round(wins.length / closed.length * 100) + "%" : "-", "Win rate (closed)", wins.length > losses.length ? "o-win" : closed.length ? "o-loss" : "") +
+    tile(closed.length ? signed(avg(closed)) : "-", "Average per trade", avg(closed) >= 0 ? "o-win" : "o-loss") +
+    tile(wins.length ? signed(avg(wins)) : "-", "Average winner", "o-win") +
+    tile(losses.length ? signed(avg(losses)) : "-", "Average loser", "o-loss") +
+    tile(closed.length ? (pf === Infinity ? "∞" : pf.toFixed(2)) : "-", "Profit factor") +
+    tile(best ? `${esc(best.symbol)} ${signed(tradePnl(best))}` : "-", "Best trade", "o-win") +
+    tile(worst ? `${esc(worst.symbol)} ${signed(tradePnl(worst))}` : "-", "Worst trade", "o-loss") +
+    tile(holds.length ? dur(sum(holds) / holds.length) : "-", "Average hold");
+  $("#baskets").innerHTML = `<tr><th>Rule</th><th class="num">Trades</th><th class="num">Put in</th><th class="num">Worth now</th><th class="num">Return</th><th class="num">Hit 2x</th><th class="num">Stopped or dead</th></tr>` +
     BASKETS.map(([name, fn]) => {
-      const sub = es.filter(fn), p = portfolio(sub);
-      const ck = sub.filter(e => e.checked);
-      const wins = ck.filter(e => e.outcome === "2x hit" || e.outcome === "3x hit").length;
-      const loss = ck.filter(e => e.outcome === "Stop hit" || e.outcome === "Dead").length;
+      const sub = es.filter(fn), q = portfolio(sub), ck = sub.filter(e => e.checked);
+      const w = ck.filter(e => e.outcome === "2x hit" || e.outcome === "3x hit").length;
+      const l = ck.filter(e => e.outcome === "Stop hit" || e.outcome === "Dead").length;
       const pc = n => ck.length ? Math.round(n / ck.length * 100) + "%" : "-";
-      return `<tr><td>${name}</td><td class="num">${p.n}</td><td class="num">${money(p.invested)}</td><td class="num">${money(p.value)}</td>
-        <td class="num ${p.n ? (p.pnl >= 0 ? "o-win" : "o-loss") : ""}">${p.n ? pctTxt(p.pct) : "-"}</td><td class="num">${pc(wins)}</td><td class="num">${pc(loss)}</td></tr>`;
+      return `<tr><td>${name}</td><td class="num">${q.n}</td><td class="num">${money(q.invested)}</td><td class="num">${money(q.value)}</td>
+        <td class="num ${q.n ? (q.pnl >= 0 ? "o-win" : "o-loss") : ""}">${q.n ? pctTxt(q.pct) : "-"}</td><td class="num">${pc(w)}</td><td class="num">${pc(l)}</td></tr>`;
     }).join("");
-  const checked = es.filter(e => e.checked);
-  const wins = checked.filter(e => e.outcome === "2x hit" || e.outcome === "3x hit").length;
-  const stops = checked.filter(e => e.outcome === "Stop hit" || e.outcome === "Dead").length;
-  const avg = checked.length ? checked.reduce((n, e) => n + planResult(e), 0) / checked.length : null;
-  const pctOf = n => checked.length ? Math.round(n / checked.length * 100) + "%" : "-";
-  $("#tiles").innerHTML = `
-    <div class="tile"><b>${es.length}</b><span>Coins logged</span></div>
-    <div class="tile"><b>${checked.length}</b><span>Checked</span></div>
-    <div class="tile"><b class="${wins ? "o-win" : ""}">${pctOf(wins)}</b><span>Hit 2x before the stop</span></div>
-    <div class="tile"><b class="${stops ? "o-loss" : ""}">${pctOf(stops)}</b><span>Stop hit or dead</span></div>
-    <div class="tile"><b>${avg === null ? "-" : (avg >= 1 ? "+" : "") + Math.round((avg - 1) * 100) + "%"}</b><span>Plan result, average</span></div>`;
-  if (!es.length) { $("#tracktable").innerHTML = `<tr><td class="empty">No coins logged yet. Run a scan: every coin that passes gets logged.</td></tr>`; return; }
+  if (!es.length) { $("#tracktable").innerHTML = `<tr><td class="empty">No trades yet. Run a scan: every coin that passes becomes a $250 paper trade.</td></tr>`; return; }
   const cls = o => o === "2x hit" || o === "3x hit" ? "o-win" : o === "Stop hit" || o === "Dead" ? "o-loss" : "o-open";
   const x = v => v === null || v === undefined ? "-" : v.toFixed(2) + "x";
-  $("#tracktable").innerHTML = `<tr><th>Logged</th><th>Coin</th><th>Source</th><th>Label</th><th>Warnings</th><th>Price then</th><th>Now</th><th>Best since</th><th>Outcome</th><th>Plan</th><th></th></tr>` +
-    es.map(e => `<tr>
-      <td>${new Date(e.logged).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"})}</td>
-      <td><b>${esc(e.symbol)}</b> <span class="sub">${esc(e.name)}</span></td>
+  $("#tracktable").innerHTML = `<tr><th>Bought</th><th>Coin</th><th>Source</th><th>Label</th><th class="num">Warn</th><th class="num">Entry</th><th class="num">Size</th><th class="num">Now</th><th class="num">Best</th><th>Status</th><th>Exit</th><th class="num">Held</th><th class="num">P&amp;L</th><th class="num">Return</th><th></th></tr>` +
+    es.map(e => {
+      const pnl = e.checked ? tradePnl(e) : null;
+      return `<tr>
+      <td>${when(e.logged)}</td>
+      <td><b>${esc(e.symbol)}</b> <span class="tsub">${esc(e.name)}</span></td>
       <td>${e.source === "pumpfun" ? "pump.fun" : "Robinhood"}</td>
       <td>${esc(e.label || "-")}</td>
       <td class="num">${e.warns}</td>
       <td class="num">${money(e.price0)}</td>
+      <td class="num">$${PAPER}</td>
       <td class="num">${e.now === null ? "-" : x(e.now / e.price0)}</td>
       <td class="num">${x(e.best)}</td>
       <td class="${cls(e.outcome)}">${esc(e.outcome)}${e.final ? "" : e.checked ? " (so far)" : ""}</td>
-      <td class="num">${e.checked ? (planResult(e) >= 1 ? "+" : "") + Math.round((planResult(e) - 1) * 100) + "%" : "-"}</td>
+      <td>${e.exit ? when(exitTime(e)) : e.t2 ? "half sold " + when(e.t2 * 1000) : "-"}</td>
+      <td class="num">${dur((e.exit ? exitTime(e) : Date.now()) - Date.parse(e.logged))}</td>
+      <td class="num ${pnl === null ? "" : pnl >= 0 ? "o-win" : "o-loss"}">${pnl === null ? "-" : signed(pnl)}</td>
+      <td class="num ${pnl === null ? "" : pnl >= 0 ? "o-win" : "o-loss"}">${pnl === null ? "-" : pctTxt(pnl / PAPER * 100)}</td>
       <td>${safeUrl(e.chart) ? `<a href="${esc(e.chart)}" target="_blank" rel="noopener noreferrer">chart</a>` : ""}</td>
-    </tr>`).join("");
+    </tr>`; }).join("");
 }
-
-$("#checkbtn").onclick = checkResults;
+$("#checkbtn").onclick = () => checkResults(false);
 $("#exportbtn").onclick = () => {
   const blob = new Blob([JSON.stringify({exported: new Date().toISOString(), track}, null, 1)], {type: "application/json"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
@@ -932,18 +1001,16 @@ $("#importfile").onchange = async ev => {
   try {
     const j = JSON.parse(await f.text()); const inc = j.track || j; let n = 0;
     for (const [k, v] of Object.entries(inc)) if (v && v.token && v.price0 && !track[k]) { track[k] = v; n++; }
-    saveTrack(); renderTrack(); $("#trackstatus").textContent = `Imported ${n} new coin${n === 1 ? "" : "s"}.`;
+    saveTrack(); renderTrack(); $("#trackstatus").textContent = `Imported ${n} new trade${n === 1 ? "" : "s"}.`;
   } catch (e) { $("#trackstatus").textContent = "That file could not be read."; }
   ev.target.value = "";
 };
-$("#clearbtn").onclick = () => { if (confirm("Delete the whole track record on this device?")) { track = {}; saveTrack(); renderTrack(); } };
-
+$("#clearbtn").onclick = () => { if (confirm("Delete the whole paper portfolio on this device?")) { track = {}; saveTrack(); renderTrack(); } };
 document.querySelectorAll(".views button").forEach(b => b.onclick = () => {
   document.querySelectorAll(".views button").forEach(x => x.classList.toggle("on", x === b));
   document.body.classList.toggle("view-track", b.dataset.view === "track");
   if (b.dataset.view === "track") renderTrack();
 });
-
 try { $("#autocheck").checked = localStorage.getItem("flipAuto") !== "off"; } catch (e) {}
 $("#autocheck").onchange = () => { try { localStorage.setItem("flipAuto", $("#autocheck").checked ? "on" : "off"); } catch (e) {} };
 try { const saved = localStorage.getItem("flipLastScan"); if (saved) data = JSON.parse(saved); } catch (e) {}

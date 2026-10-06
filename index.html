@@ -478,7 +478,10 @@ function prefilter(pools, hours, L) {
 async function findPair(token, chain) {
   const pairs = await getJSON(`https://api.dexscreener.com/token-pairs/v1/${chain}/${token}`);
   if (!Array.isArray(pairs) || !pairs.length) return null;
-  return pairs.reduce((a, b) => (((b.liquidity || {}).usd || 0) > ((a.liquidity || {}).usd || 0) ? b : a));
+  // The coin must be the pair's base token, or priceUsd belongs to the other coin (same fix as scan.py, Oct 6 2026).
+  const own = pairs.filter(p => ((p.baseToken || {}).address || "").toLowerCase() === token.toLowerCase());
+  if (!own.length) return null;
+  return own.reduce((a, b) => (((b.liquidity || {}).usd || 0) > ((a.liquidity || {}).usd || 0) ? b : a));
 }
 async function solanaSafety(token, pairAddr, F, W, N) {
   let r;
@@ -822,6 +825,7 @@ function cardHtml(c, srcKey) {
     : `<span class="badge b-warn">Pass, ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
   const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : srcKey === "movers" ? `<span class="badge b-sol">Mover</span>`
     : srcKey === "small" ? `<span class="badge b-warn">Small pool</span>` : srcKey === "fresh" ? `<span class="badge b-warn">Fresh graduate</span>` : `<span class="badge b-rh">Robinhood</span>`;
+  const fastBadge = c.fast ? `<span class="badge b-pass" title="Found by the fast scan on the VPS, checked every 2 minutes">Fast scan, seen at ${c.firstSeenAgeH}h old</span>` : "";
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
   const tot = (c.buys24 || 0) + (c.sells24 || 0);
   const buyShare = tot ? c.buys24 / tot * 100 : 50;
@@ -840,7 +844,7 @@ function cardHtml(c, srcKey) {
   return `<article class="card ${c.verdict === "PASS" ? "v-pass" : "v-warn"}">
     <div class="top">${img}
       <div class="title"><div class="sym">${esc(c.symbol)}${newTokens.has(c.token) ? `<span class="newb">NEW</span>` : ""}</div><div class="name">${esc(c.name)}</div></div>
-      <div class="badges">${verdict}${chain}</div>
+      <div class="badges">${verdict}${chain}${fastBadge}</div>
     </div>
     ${about}
     <div class="stats">
@@ -1211,6 +1215,8 @@ const BASKETS = [
   ["Movers only ($100 bets)", e => nowOnly(e) && e.source === "movers"],
   ["Small pools only ($50 bets)", e => nowOnly(e) && e.source === "small"],
   ["Fresh graduates only ($50 bets)", e => nowOnly(e) && e.source === "fresh"],
+  ["Fast scan only (VPS, from Oct 6)", e => nowOnly(e) && !!(e.features || {}).fast],
+  ["GitHub scan only (slow, before Oct 6 evening)", e => nowOnly(e) && !(e.features || {}).fast],
   ["Says utility only", e => nowOnly(e) && /utility/.test(e.label || "")],
   ["Whale buy seen", e => nowOnly(e) && !!(e.features || {}).whale],
   ["Big buys beat big sells", e => nowOnly(e) && (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
@@ -1413,9 +1419,9 @@ try { const saved = localStorage.getItem("flipLastScan"); if (saved) data = JSON
 render(); updateTrackCount(); renderPaper();
 
 // ---------- results from the hourly scan on GitHub ----------
-// data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
+// data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-06i";
+const VERSION = "2026-10-06j";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {
@@ -1435,6 +1441,15 @@ async function checkVersion() {
     if (v && v !== VERSION) toast("A new version of the scanner is out.", "Reload", () => location.reload());
   } catch (e) {}
 }
+// The VPS fast scan (data/fast.json, every ~2 minutes) and the GitHub full scan (data/latest.json, every 30 minutes)
+// are shown together. A coin both found is shown once, with the fast scan's card (it saw the coin first).
+function mergeScans(gh, fast) {
+  if (!fast || !fast.finished) return gh;
+  if (!gh || !gh.finished) return fast;
+  const seen = new Set(fast.sources.flatMap(s => s.passed.map(c => c.token)));
+  const later = Date.parse(fast.finished) > Date.parse(gh.finished) ? fast.finished : gh.finished;
+  return {...gh, finished: later, sources: [...fast.sources, ...gh.sources.map(s => ({...s, passed: s.passed.filter(c => !seen.has(c.token))}))]};
+}
 async function loadAuto() {
   if (location.protocol === "file:") return;
   const bust = "?t=" + Math.floor(Date.now() / 120000);
@@ -1448,7 +1463,10 @@ async function loadAuto() {
     if (merged) { saveTrack(); renderPaper(); if (document.body.classList.contains("view-track")) renderTrack(); }
   } catch (e) { /* no automatic record yet */ }
   try {
-    const latest = await getJSON("data/latest.json" + bust);
+    const gh = await getJSON("data/latest.json" + bust).catch(() => null);
+    let fast = null;
+    try { fast = await getJSON("data/fast.json" + bust); } catch (e) { /* VPS fast scan not running */ }
+    const latest = mergeScans(gh, fast);
     if (latest && latest.finished && (!data || !data.finished || Date.parse(latest.finished) > Date.parse(data.finished)) && !running) {
       const before = new Set((data && data.sources ? data.sources : []).flatMap(s => s.passed.map(c => c.token)));
       const now = latest.sources.flatMap(s => s.passed.map(c => c.token));
@@ -1457,14 +1475,15 @@ async function loadAuto() {
       data = latest; render();
       try { localStorage.setItem("flipLastScan", JSON.stringify(latest)); localStorage.setItem("flipSeenScan", latest.finished); } catch (e) {}
       seenScan = latest.finished;
-      if (fresh) {
-        document.title = `(${newTokens.size || now.length}) Flip Scanner`;
+      if (fresh && newTokens.size) {
+        document.title = `(${newTokens.size}) Flip Scanner`;
         toast(`New scan just arrived: ${now.length} passed${newTokens.size ? `, ${newTokens.size} new` : ""}.`, "Show", () => {
           document.querySelector('.views button[data-view="scan"]').click(); window.scrollTo({top: 0, behavior: "smooth"}); document.title = "Flip Scanner";
         });
       }
     }
-    if (latest && latest.finished) $("#lastinfo").textContent = `Automatic scan (GitHub): ${latest.hours}h window, finished ${ago(latest.finished)}. Next one expected around ${nextRunText()}.`;
+    if (latest && latest.finished) $("#lastinfo").textContent = (gh && gh.finished ? `Full scan (GitHub): ${gh.hours}h window, finished ${ago(gh.finished)}, next around ${nextRunText()}. ` : "")
+      + (fast && fast.finished ? `Fast scan (VPS, every 2 minutes): last check ${ago(fast.finished)}.` : "Fast scan (VPS): no data yet.");
   } catch (e) { /* no automatic scan yet */ }
 }
 loadAuto().then(refreshPrices);

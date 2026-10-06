@@ -4,6 +4,7 @@
 Same rules as index.html. Writes two files the page reads:
   data/latest.json  the last scan, same shape the page builds itself
   data/track.json   the paper portfolio: every passed coin, plus what happened since
+                    (since Oct 6 2026 written by scanner/fast.py on the VPS; GitHub runs with --no-track)
 
 Free public data only: GeckoTerminal, DexScreener, RugCheck, GoPlus. No keys.
 Usage: python3 scanner/scan.py [--hours 6] [--chains pumpfun,robinhood,movers,small,fresh] [--out data]
@@ -295,7 +296,12 @@ def find_pair(token, chain):
     pairs = get(f"https://api.dexscreener.com/token-pairs/v1/{chain}/{token}")
     if not isinstance(pairs, list) or not pairs:
         return None
-    return max(pairs, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
+    # The coin must be the pair's base token. In a pair where it is the quote, priceUsd belongs to the other coin
+    # (Oct 6 2026: control trades showed +540,000% because of this).
+    own = [p for p in pairs if ((p.get("baseToken") or {}).get("address") or "").lower() == token.lower()]
+    if not own:
+        return None
+    return max(own, key=lambda p: (p.get("liquidity") or {}).get("usd") or 0)
 
 
 def solana_safety(token, pair_addr, F, W, N):
@@ -814,10 +820,16 @@ SLIP = 0.10  # stops fill 10% worse than the stop price, like a real fast crash 
 
 def run_legs(candles, entry, t_in, stop, legs, time_stop_s):
     """Replay separate sell orders after a fill. Each leg: part of the bag, a take-profit multiple, or a trailing %.
-    Legs without a trail use the shared stop. Inside one candle a stop counts before a target."""
+    Legs without a trail use the shared stop. Inside one candle a stop counts before a target.
+    The candle the buy sits in is skipped for exits: its low and high may come from before the buy
+    (Oct 6 2026: 20 of 49 trades were "stopped" by a low that happened before the paper buy)."""
     st, cash, best, peak, first, t_tp, exit_t, last = ["open"] * len(legs), 0.0, 1.0, entry, True, None, None, entry
     for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in - 899):
-        best, last = max(best, h / entry), c
+        last = c
+        if first:
+            first = False
+            continue
+        best = max(best, h / entry)
         for i, lg in enumerate(legs):
             if st[i] != "open":
                 continue
@@ -829,7 +841,7 @@ def run_legs(candles, entry, t_in, stop, legs, time_stop_s):
             elif stop and l <= stop:
                 cash, st[i] = cash + lg["part"] * stop * (1 - SLIP) / entry, "stop"
                 continue
-            if lg.get("tp") and not first and h >= lg["tp"] * entry:
+            if lg.get("tp") and h >= lg["tp"] * entry:
                 cash, st[i] = cash + lg["part"] * lg["tp"], "tp"
                 t_tp = t_tp or t
         peak = max(peak, h)
@@ -840,7 +852,6 @@ def run_legs(candles, entry, t_in, stop, legs, time_stop_s):
         if all(x != "open" for x in st):
             exit_t = t
             break
-        first = False
     pos = sum(lg["part"] for i, lg in enumerate(legs) if st[i] == "open")
     return dict(st=st, cash=cash, pos=pos, best=best, t_tp=t_tp, exit=exit_t, last=last)
 
@@ -949,6 +960,9 @@ def check_results(track):
                     watch_fill(e, candles)
                 if e.get("entry"):
                     simulate(e, candles)
+            # Price data 100x off means a broken pool or a mixed-up coin, not a trade. Counted as flat, kept out of the way.
+            if e.get("entry") and not e["final"] and ((e.get("best") or 0) > 100 or (now_p and now_p / e["entry"] > 100)):
+                e.update(cash=1.0, pos=0.0, outcome="Bad data", exit=int(time.time()), final=True)
             if e.get("entry") and not e["final"] and ((liq is not None and liq < 1000) or (now_p and now_p / e["entry"] < 0.1)):
                 e.update(cash=e["cash"] + e["pos"] * (now_p or 0) / e["entry"], pos=0.0, outcome="Dead", exit=int(time.time()), final=True)
             if age_days > 21 and not e["final"]:
@@ -976,6 +990,7 @@ def main():
     ap.add_argument("--hours", type=float, default=6)
     ap.add_argument("--chains", default="pumpfun,robinhood,movers,small,fresh")
     ap.add_argument("--out", default="data")
+    ap.add_argument("--no-track", action="store_true", help="scan only; the paper portfolio is kept by scanner/fast.py on the VPS")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     track_path = os.path.join(args.out, "track.json")
@@ -985,18 +1000,20 @@ def main():
     except (OSError, ValueError):
         track = {}
     res = run_scan(args.hours, [c.strip() for c in args.chains.split(",") if c.strip() in SOURCES])
-    added = log_passed(track, res)
-    say(f"{added} new paper trades")
-    ctl = log_control(track, res)
-    say(f"{ctl} rejected coins added to the control group")
-    checked = check_results(track)
-    say(f"{checked} positions re-checked")
+    if not args.no_track:
+        added = log_passed(track, res)
+        say(f"{added} new paper trades")
+        ctl = log_control(track, res)
+        say(f"{ctl} rejected coins added to the control group")
+        checked = check_results(track)
+        say(f"{checked} positions re-checked")
     for s in res["sources"]:
         s.pop("rejected", None)
     with open(os.path.join(args.out, "latest.json"), "w") as fh:
         json.dump(res, fh, separators=(",", ":"))
-    with open(track_path, "w") as fh:
-        json.dump(track, fh, separators=(",", ":"))
+    if not args.no_track:
+        with open(track_path, "w") as fh:
+            json.dump(track, fh, separators=(",", ":"))
     for s in res["sources"]:
         say(f"{s['label']}: looked at {s['looked']}, {len(s['passed'])} passed, {len(s['failed'])} failed, {len(s['unchecked'])} unchecked")
 

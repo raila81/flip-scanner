@@ -2,13 +2,15 @@ name: Hourly flip scan
 
 on:
   schedule:
-    # GitHub runs schedules "best effort" and drops some, mostly on quiet repos. Two slots an hour,
-    # off the busy :00 mark, so a dropped run is covered. The concurrency group stops overlaps.
+    # GitHub runs schedules "best effort" and drops many on this repo (Oct 5-6 2026: one run in 6 hours).
+    # So each run starts the next one itself (last step). The schedule stays as a backup that restarts
+    # the chain if it ever breaks.
     - cron: "7,37 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: scan
@@ -17,8 +19,10 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
+      - name: Note the start time
+        run: echo "START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -31,6 +35,17 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add data/latest.json data/track.json
           if git diff --cached --quiet; then echo "nothing new"; exit 0; fi
-          git commit -m "Hourly scan $(date -u +'%Y-%m-%d %H:%M') UTC"
+          git commit -m "Scan $(date -u +'%Y-%m-%d %H:%M') UTC"
           git pull --rebase origin main
           git push
+      - name: Start the next run about 30 minutes after this one began
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A run started with the built-in token through workflow_dispatch is allowed to start the next one.
+          # Only one waiting run is kept per concurrency group, so extra starts from the schedule merge into one chain.
+          elapsed=$(( $(date +%s) - START ))
+          wait=$(( 1800 - elapsed ))
+          if [ "$wait" -gt 0 ]; then echo "Waiting $wait seconds"; sleep "$wait"; fi
+          gh workflow run "Hourly flip scan" --repo "${{ github.repository }}" --ref main

@@ -345,8 +345,11 @@ def robinhood_safety(token, pair_addr, F, W, N):
         F.append(f"Creator still holds {cp:.1f}%")
     lps = r.get("lp_holders") or []
     locked = sum(num(x.get("percent")) for x in lps if x.get("is_locked") == 1 or x["address"].lower() in RH_LOCKERS) * 100
+    # Sept 2026: an analyst traced a rug ring through 53 Pons launches ($18.4M). Creators made 15-25 wallets exempt
+    # from the anti-sniping tax and bought 82-86% of supply at once through 70-200 wallets. So Pons is a risk, not a plus.
     if (r.get("creator_address") or "").lower() == PONS_DEPLOYER:
-        N["notes"].append("Launched with Pons: pool money held by the Pons launch locker (Pons code is unaudited)")
+        W.append("Launched with Pons: a rug ring used Pons for 53 launches ($18.4M) with bundled first buys. Check the first buyers")
+        N["pons"] = True
     elif locked >= 90:
         N["notes"].append(f"Pool money in a known lock: {locked:.0f}%")
     else:
@@ -364,7 +367,7 @@ def check(p):
     tx1 = (p.get("txns") or {}).get("h1") or {}
     tx24 = (p.get("txns") or {}).get("h24") or {}
     chg = p.get("priceChange") or {}
-    F, W, N = [], [], {"notes": [], "unchecked": None, "holders": None, "creator": None}
+    F, W, N = [], [], {"notes": [], "unchecked": None, "holders": None, "creator": None, "pons": False}
     if liq < 10000:
         F.append(f"Pool money only {money(liq)} (under $10K)")
     elif liq < 20000:
@@ -377,6 +380,9 @@ def check(p):
         W.append(f"Pool is only {liq / mc * 100:.1f}% of market cap: big sells crash it")
     if (chg.get("h1") or 0) <= -30:
         W.append(f"Falling hard: {chg.get('h1')}% in 1h")
+    boosts = (p.get("boosts") or {}).get("active") or 0
+    if boosts:
+        W.append(f"Paid DexScreener boost ({boosts}): someone paid for promotion. Boosted coins often drop after")
     if (chg.get("h6") or 0) >= 150:
         W.append(f"Already up {round(chg.get('h6'))}% in 6h: you would be buying after the run")
     bubblemap = None
@@ -404,7 +410,7 @@ def check(p):
         verdict=verdict, unchecked=N["unchecked"], age_h=round(age_min / 60, 1), price=price, mc=mc, liq=liq,
         vol24=(p.get("volume") or {}).get("h24") or 0, buys24=tx24.get("buys") or 0, sells24=tx24.get("sells") or 0,
         chg1=chg.get("h1") or 0, chg6=chg.get("h6") or 0, chg24=chg.get("h24") or 0,
-        holders=N["holders"], creator=N["creator"], fails=F, warns=W, chart=p.get("url"), bubblemap=bubblemap,
+        holders=N["holders"], creator=N["creator"], pons=N["pons"], boosts=boosts, fails=F, warns=W, chart=p.get("url"), bubblemap=bubblemap,
         plan={"x2": price * 2, "x3": price * 3, "stop": price * 0.67, "max_bet": liq * 0.02}, **soc)
 
 
@@ -658,7 +664,7 @@ def log_passed(track, res):
                     bigBuys=b.get("buys", 0), bigBuyUsd=round(b.get("buyUsd", 0)), bigSells=b.get("sells", 0),
                     bigSellUsd=round(b.get("sellUsd", 0)), bigWallets=b.get("wallets", 0), bigBuyers=b.get("buyers", []),
                     whale=is_whale(c), hourUtc=now.hour, weekday=now.weekday(), window=res["hours"], auto=True,
-                    chart=c.get("chartF"), plannedEntry=o.get("entry"), planOk=o.get("ok")),
+                    chart=c.get("chartF"), plannedEntry=o.get("entry"), planOk=o.get("ok"), boosts=c.get("boosts", 0), pons=c.get("pons", False)),
                 now=None, liq=None, best=None, t2=None, exit=None, final=False, checked=None, cash=0.0, pos=1.0, legs=None)
             stop = o["stop"] if o.get("ok") and o.get("stop", 0) < c["price"] else c["price"] * NOW_STOP
             track[c["token"]] = dict(base, strategy="now", entry=c["price"], entryT=ts_of(res["finished"]), stop0=stop, outcome="Open")
@@ -686,56 +692,84 @@ def watch_fill(e, candles):
         e.update(outcome="Missed", why=f"price never came down to {money(limit)}", final=True)
 
 
-def simulate(e, candles):
-    """Three separate orders after the fill, as set in Jupiter. See the note at the top of this section."""
-    entry, stop, t_in = e["entry"], e["stop0"], e["entryT"]
-    leg = {"A": "open", "B": "open", "C": "open"}
-    part = {"A": 0.5, "B": 0.4, "C": 0.1}
-    cash, best, peak, t2, exit_t = 0.0, 1.0, entry, None, None
-    first = True
+SLIP = 0.10  # stops fill 10% worse than the stop price, like a real fast crash (Jupiter stops use up to 20% slippage)
+
+
+def run_legs(candles, entry, t_in, stop, legs, time_stop_s):
+    """Replay separate sell orders after a fill. Each leg: part of the bag, a take-profit multiple, or a trailing %.
+    Legs without a trail use the shared stop. Inside one candle a stop counts before a target."""
+    st, cash, best, peak, first, t_tp, exit_t, last = ["open"] * len(legs), 0.0, 1.0, entry, True, None, None, entry
     for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in - 899):
-        best = max(best, h / entry)
-        for k in ("A", "B"):
-            if leg[k] != "open":
+        best, last = max(best, h / entry), c
+        for i, lg in enumerate(legs):
+            if st[i] != "open":
                 continue
-            if l <= stop:
-                cash += part[k] * stop / entry
-                leg[k] = "stop"
-            elif not first and h >= (2 if k == "A" else 3) * entry:
-                cash += part[k] * (2 if k == "A" else 3)
-                leg[k] = "tp"
-                if k == "A":
-                    t2 = t
-        if leg["C"] == "open":
-            trail = peak * (1 - TRAIL)
-            if l <= trail:
-                cash += part["C"] * trail / entry
-                leg["C"] = "trail"
-            else:
-                peak = max(peak, h)
-        if t - t_in > TIME_STOP_D * 86400:
-            for k in leg:
-                if leg[k] == "open":
-                    cash += part[k] * c / entry
-                    leg[k] = "time"
-        if all(v != "open" for v in leg.values()):
+            if lg.get("trail"):
+                lvl = peak * (1 - lg["trail"])
+                if l <= lvl:
+                    cash, st[i] = cash + lg["part"] * lvl * (1 - SLIP) / entry, "trail"
+                    continue
+            elif stop and l <= stop:
+                cash, st[i] = cash + lg["part"] * stop * (1 - SLIP) / entry, "stop"
+                continue
+            if lg.get("tp") and not first and h >= lg["tp"] * entry:
+                cash, st[i] = cash + lg["part"] * lg["tp"], "tp"
+                t_tp = t_tp or t
+        peak = max(peak, h)
+        if time_stop_s and t - t_in > time_stop_s:
+            for i, lg in enumerate(legs):
+                if st[i] == "open":
+                    cash, st[i] = cash + lg["part"] * c / entry, "time"
+        if all(x != "open" for x in st):
             exit_t = t
             break
         first = False
-    pos = sum(part[k] for k in leg if leg[k] == "open")
-    if leg["A"] == "stop":
+    pos = sum(lg["part"] for i, lg in enumerate(legs) if st[i] == "open")
+    return dict(st=st, cash=cash, pos=pos, best=best, t_tp=t_tp, exit=exit_t, last=last)
+
+
+CARD_LEGS = [{"part": 0.5, "tp": 2}, {"part": 0.4, "tp": 3}, {"part": 0.1, "trail": TRAIL}]
+# What-if exits: the same trades replayed with other sell plans, so the data picks the exit plan.
+VARIANTS = [
+    ("Card plan: 2x, 3x, moonbag trail 40%", "card", CARD_LEGS, TIME_STOP_D * 86400),
+    ("First sell at 1.5x", "card", [{"part": 0.5, "tp": 1.5}, {"part": 0.4, "tp": 3}, {"part": 0.1, "trail": 0.4}], TIME_STOP_D * 86400),
+    ("Sell everything at 2x", "card", [{"part": 1.0, "tp": 2}], TIME_STOP_D * 86400),
+    ("Bigger targets: 3x and 5x", "card", [{"part": 0.5, "tp": 3}, {"part": 0.4, "tp": 5}, {"part": 0.1, "trail": 0.4}], TIME_STOP_D * 86400),
+    ("Tight stop: 20% below entry", 0.8, CARD_LEGS, TIME_STOP_D * 86400),
+    ("Wide stop: 50% below entry", 0.5, CARD_LEGS, TIME_STOP_D * 86400),
+    ("Moonbag trail 20%", "card", [{"part": 0.5, "tp": 2}, {"part": 0.4, "tp": 3}, {"part": 0.1, "trail": 0.2}], TIME_STOP_D * 86400),
+    ("No stop, sell after 24 hours", None, [{"part": 1.0}], 86400),
+]
+
+
+def what_if(e, candles):
+    out = {}
+    for name, stop_rule, legs, ts in VARIANTS:
+        stop = e["stop0"] if stop_rule == "card" else (e["entry"] * stop_rule if stop_rule else None)
+        r = run_legs(candles, e["entry"], e["entryT"], stop, legs, ts)
+        out[name] = [round(r["cash"] + r["pos"] * r["last"] / e["entry"], 4), r["pos"] == 0]
+    e["whatif"] = out
+
+
+def simulate(e, candles):
+    """The card's three Jupiter orders after the fill: 50% at 2x, 40% at 3x, 10% moonbag on a 40% trailing stop."""
+    r = run_legs(candles, e["entry"], e["entryT"], e["stop0"], CARD_LEGS, TIME_STOP_D * 86400)
+    a, b, c = r["st"]
+    if a == "stop":
         status = "Stop hit"
-    elif leg["A"] == "tp" and leg["B"] == "tp":
-        status = "3x hit, moonbag trailed out" if leg["C"] != "open" else "3x hit, moonbag running"
-    elif leg["A"] == "tp" and leg["B"] == "stop":
+    elif a == "tp" and b == "tp":
+        status = "3x hit, moonbag trailed out" if c != "open" else "3x hit, moonbag running"
+    elif a == "tp" and b == "stop":
         status = "2x hit, rest stopped"
-    elif leg["A"] == "tp":
+    elif a == "tp":
         status = "2x hit, rest running"
-    elif any(v == "time" for v in leg.values()):
+    elif "time" in r["st"]:
         status = "Time stop"
     else:
         status = "Open"
-    e.update(cash=cash, pos=pos, best=best, t2=t2, exit=exit_t, outcome=status, legs=leg, final=pos == 0)
+    e.update(cash=r["cash"], pos=r["pos"], best=r["best"], t2=r["t_tp"], exit=r["exit"], outcome=status,
+             legs=dict(zip("ABC", r["st"])), final=r["pos"] == 0)
+    what_if(e, candles)
 
 
 def old_replay(candles, price0):

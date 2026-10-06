@@ -269,6 +269,9 @@ table.track{min-width:980px}
     <h2>Which rule works?</h2>
     <div class="twrap"><table class="baskets" id="baskets"></table></div>
     <p class="tsub">The paper test copies the real Jupiter orders on each card. Every coin that passes gets two paper trades of $250 ($100 for Movers). <b>Buy now</b> buys at the scan price. <b>Limit at support</b> places the card's limit buy at support and fills only if the price comes down to it within 12 hours. Both then hold three orders with the card's stop-loss: 50% sells at 2x, 40% at 3x, and the last 10% rides a 40% trailing stop. Costs of 3% are taken off. The first rows compare the two strategies. The other rows slice the buy-now trades by rule.</p>
+    <h2>What-if exits</h2>
+    <div class="twrap"><table class="baskets" id="whatif"></table></div>
+    <p class="tsub">The same trades (both strategies, since Oct 6) replayed with other ways to sell. It shows which exit plan would have made the most, before you change the real orders. Stops fill 10% worse than their price, like a fast crash. Open trades count at today's price. Under about 30 trades the numbers mean little.</p>
     <h2>Every trade</h2>
     <div class="twrap"><table class="track" id="tracktable"></table></div>
     <p class="tsub">The hourly GitHub scan replays 15-minute candles to see what each trade did. If a target and the stop land in the same candle, the stop counts first. "Check results" does the same right now from this browser. Trades from before Oct 6 keep the old plan.</p>
@@ -540,7 +543,9 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   // GoPlus cannot see Uniswap V4 pools well. Coins launched with Pons keep their pool money in the Pons locker.
   const lps = r.lp_holders || [];
   const locked = sum(lps.filter(x => x.is_locked === 1 || RH_LOCKERS[x.address.toLowerCase()]).map(x => num(x.percent))) * 100;
-  if ((r.creator_address || "").toLowerCase() === PONS_DEPLOYER) N.push("Launched with Pons: pool money held by the Pons launch locker (Pons code is unaudited)");
+  // Sept 2026: an analyst traced a rug ring through 53 Pons launches ($18.4M). Creators made 15-25 wallets exempt from the
+  // anti-sniping tax and bought 82-86% of supply at once through 70-200 wallets. So Pons is a risk, not a plus.
+  if ((r.creator_address || "").toLowerCase() === PONS_DEPLOYER) { W.push("Launched with Pons: a rug ring used Pons for 53 launches ($18.4M) with bundled first buys. Check the first buyers"); N.pons = true; }
   else if (locked >= 90) N.push(`Pool money in a known lock: ${locked.toFixed(0)}%`);
   else W.push("Pool lock unknown: not a Pons launch, and GoPlus cannot see Uniswap V4 pools");
   N.holders = r.holder_count;
@@ -561,6 +566,8 @@ async function check(p) {
   if ((tx1.buys || 0) >= 20 && (tx1.sells || 0) === 0) F.push("Many buys, zero sells in 1h: maybe you cannot sell");
   if (mc && liq / mc < 0.05) W.push(`Pool is only ${(liq / mc * 100).toFixed(1)}% of market cap: big sells crash it`);
   if ((chg.h1 || 0) <= -30) W.push(`Falling hard: ${chg.h1}% in 1h`);
+  const boosts = (p.boosts || {}).active || 0;
+  if (boosts) W.push(`Paid DexScreener boost (${boosts}): someone paid for promotion. Boosted coins often drop after`);
   if ((chg.h6 || 0) >= 150) W.push(`Already up ${Math.round(chg.h6)}% in 6h: you would be buying after the run`);
   let bubblemap = null;
   if (chain === "solana") { await solanaSafety(b.address, p.pairAddress, F, W, N); bubblemap = `https://app.bubblemaps.io/sol/token/${b.address}`; }
@@ -580,7 +587,7 @@ async function check(p) {
     unchecked: N.unchecked || null,
     age_h: Math.round(ageMin / 6) / 10, price, mc, liq, vol24: (p.volume || {}).h24 || 0,
     buys24: tx24.buys || 0, sells24: tx24.sells || 0, chg1: chg.h1 || 0, chg6: chg.h6 || 0, chg24: chg.h24 || 0,
-    holders: N.holders ?? null, creator: N.creator || null, fails: F, warns: W, chart: p.url, bubblemap,
+    holders: N.holders ?? null, creator: N.creator || null, pons: !!N.pons, boosts, fails: F, warns: W, chart: p.url, bubblemap,
     plan: {x2: price * 2, x3: price * 3, stop: price * 0.67, max_bet: liq * 0.02}, ...soc,
   };
 }
@@ -957,7 +964,7 @@ function logPassed(res) {
         bigBuys: b.buys || 0, bigBuyUsd: Math.round(b.buyUsd || 0), bigSells: b.sells || 0, bigSellUsd: Math.round(b.sellUsd || 0),
         bigWallets: b.wallets || 0, bigBuyers: b.buyers || [], whale: !!isWhale(c),
         hourUtc: new Date().getUTCHours(), weekday: new Date().getUTCDay(), window: res.hours,
-        chart: c.chartF || null, plannedEntry: o.entry || null, planOk: o.ok ?? null,
+        chart: c.chartF || null, plannedEntry: o.entry || null, planOk: o.ok ?? null, boosts: c.boosts || 0, pons: !!c.pons,
       },
       now: null, liq: null, best: null, t2: null, exit: null, final: false, checked: null, cash: 0, pos: 1, legs: null,
     };
@@ -980,34 +987,62 @@ function watchFill(e, candles) {
   }
   if (Date.now() / 1000 > t0 + WATCH_HOURS * 3600) Object.assign(e, {outcome: "Missed", why: `price never came down to ${money(limit)}`, final: true});
 }
-// Three separate orders after the fill, as set in Jupiter (see the note at the top of this section).
-function simulate(e, candles) {
-  const entry = e.entry, stop = e.stop0, tIn = e.entryT;
-  const leg = {A: "open", B: "open", C: "open"}, part = {A: 0.5, B: 0.4, C: 0.1};
-  let cash = 0, best = 1, peak = entry, t2 = null, exitT = null, first = true;
-  for (const [t, o, h, l, c] of candles.filter(x => x[0] >= tIn - 899).sort((a, b) => a[0] - b[0])) {
-    best = Math.max(best, h / entry);
-    for (const k of ["A", "B"]) {
-      if (leg[k] !== "open") continue;
-      const x = k === "A" ? 2 : 3;
-      if (l <= stop) { cash += part[k] * stop / entry; leg[k] = "stop"; }
-      else if (!first && h >= x * entry) { cash += part[k] * x; leg[k] = "tp"; if (k === "A") t2 = t; }
-    }
-    if (leg.C === "open") {
-      const trail = peak * (1 - TRAIL);
-      if (l <= trail) { cash += part.C * trail / entry; leg.C = "trail"; } else peak = Math.max(peak, h);
-    }
-    if (t - tIn > TIME_STOP_D * 86400) for (const k in leg) if (leg[k] === "open") { cash += part[k] * c / entry; leg[k] = "time"; }
-    if (Object.values(leg).every(v => v !== "open")) { exitT = t; break; }
+const SLIP = 0.10; // stops fill 10% worse than the stop price, like a real fast crash (Jupiter stops use up to 20% slippage)
+// Replay separate sell orders after a fill. Each leg: part of the bag, a take-profit multiple, or a trailing %.
+// Legs without a trail use the shared stop. Inside one candle a stop counts before a target. Same as run_legs in scan.py.
+function runLegs(candles, entry, tIn, stop, legs, timeStopS) {
+  const st = legs.map(() => "open");
+  let cash = 0, best = 1, peak = entry, first = true, tTp = null, exitT = null, last = entry;
+  for (const [t, , h, l, c] of candles.filter(x => x[0] >= tIn - 899).sort((a, b) => a[0] - b[0])) {
+    best = Math.max(best, h / entry); last = c;
+    legs.forEach((lg, i) => {
+      if (st[i] !== "open") return;
+      if (lg.trail) {
+        const lvl = peak * (1 - lg.trail);
+        if (l <= lvl) { cash += lg.part * lvl * (1 - SLIP) / entry; st[i] = "trail"; return; }
+      } else if (stop && l <= stop) { cash += lg.part * stop * (1 - SLIP) / entry; st[i] = "stop"; return; }
+      if (lg.tp && !first && h >= lg.tp * entry) { cash += lg.part * lg.tp; st[i] = "tp"; tTp = tTp || t; }
+    });
+    peak = Math.max(peak, h);
+    if (timeStopS && t - tIn > timeStopS) legs.forEach((lg, i) => { if (st[i] === "open") { cash += lg.part * c / entry; st[i] = "time"; } });
+    if (st.every(x => x !== "open")) { exitT = t; break; }
     first = false;
   }
-  const pos = sum(Object.keys(leg).filter(k => leg[k] === "open").map(k => part[k]));
-  const status = leg.A === "stop" ? "Stop hit"
-    : leg.A === "tp" && leg.B === "tp" ? (leg.C !== "open" ? "3x hit, moonbag trailed out" : "3x hit, moonbag running")
-    : leg.A === "tp" && leg.B === "stop" ? "2x hit, rest stopped"
-    : leg.A === "tp" ? "2x hit, rest running"
-    : Object.values(leg).includes("time") ? "Time stop" : "Open";
-  Object.assign(e, {cash, pos, best, t2, exit: exitT, outcome: status, legs: leg, final: pos === 0});
+  return {st, cash, pos: sum(legs.filter((lg, i) => st[i] === "open").map(lg => lg.part)), best, tTp, exit: exitT, last};
+}
+const CARD_LEGS = [{part: 0.5, tp: 2}, {part: 0.4, tp: 3}, {part: 0.1, trail: TRAIL}];
+const DAYS14 = TIME_STOP_D * 86400;
+// What-if exits: the same trades replayed with other sell plans, so the data picks the exit plan.
+const VARIANTS = [
+  ["Card plan: 2x, 3x, moonbag trail 40%", "card", CARD_LEGS, DAYS14],
+  ["First sell at 1.5x", "card", [{part: 0.5, tp: 1.5}, {part: 0.4, tp: 3}, {part: 0.1, trail: 0.4}], DAYS14],
+  ["Sell everything at 2x", "card", [{part: 1, tp: 2}], DAYS14],
+  ["Bigger targets: 3x and 5x", "card", [{part: 0.5, tp: 3}, {part: 0.4, tp: 5}, {part: 0.1, trail: 0.4}], DAYS14],
+  ["Tight stop: 20% below entry", 0.8, CARD_LEGS, DAYS14],
+  ["Wide stop: 50% below entry", 0.5, CARD_LEGS, DAYS14],
+  ["Moonbag trail 20%", "card", [{part: 0.5, tp: 2}, {part: 0.4, tp: 3}, {part: 0.1, trail: 0.2}], DAYS14],
+  ["No stop, sell after 24 hours", null, [{part: 1}], 86400],
+];
+function whatIf(e, candles) {
+  const out = {};
+  for (const [name, rule, legs, ts] of VARIANTS) {
+    const stop = rule === "card" ? e.stop0 : rule ? e.entry * rule : null;
+    const r = runLegs(candles, e.entry, e.entryT, stop, legs, ts);
+    out[name] = [Math.round((r.cash + r.pos * r.last / e.entry) * 1e4) / 1e4, r.pos === 0];
+  }
+  e.whatif = out;
+}
+// The card's three Jupiter orders after the fill: 50% at 2x, 40% at 3x, 10% moonbag on a 40% trailing stop.
+function simulate(e, candles) {
+  const r = runLegs(candles, e.entry, e.entryT, e.stop0, CARD_LEGS, DAYS14);
+  const [a, b, c] = r.st;
+  const status = a === "stop" ? "Stop hit"
+    : a === "tp" && b === "tp" ? (c !== "open" ? "3x hit, moonbag trailed out" : "3x hit, moonbag running")
+    : a === "tp" && b === "stop" ? "2x hit, rest stopped"
+    : a === "tp" ? "2x hit, rest running"
+    : r.st.includes("time") ? "Time stop" : "Open";
+  Object.assign(e, {cash: r.cash, pos: r.pos, best: r.best, t2: r.tTp, exit: r.exit, outcome: status, legs: {A: a, B: b, C: c}, final: r.pos === 0});
+  whatIf(e, candles);
 }
 // Old plan v1 (trades from before Oct 6): half at 2x, rest at 3x, stop -33%.
 function replay(candles, price0) {
@@ -1127,6 +1162,9 @@ const BASKETS = [
   ["Not up over 150% in 6h", e => nowOnly(e) && ((e.features || {}).chg6 || 0) < 150],
   ["Under 3.5 buys per buyer", e => nowOnly(e) && (e.features || {}).tradesPerBuyer != null && e.features.tradesPerBuyer <= 3.5],
   ["Pool at least 10% of market cap", e => nowOnly(e) && ((e.features || {}).liqToMc || 0) >= 10],
+  ["Paid DexScreener boost", e => nowOnly(e) && ((e.features || {}).boosts || 0) > 0],
+  ["No paid boost", e => nowOnly(e) && isV2(e) && !((e.features || {}).boosts)],
+  ["Pons launch (Robinhood)", e => nowOnly(e) && !!(e.features || {}).pons],
 ];
 function portfolio(all) {
   const es = all.filter(entered);
@@ -1232,6 +1270,17 @@ function renderTrack() {
       return `<tr><td>${name}</td><td class="num">${q.n}${q.waiting ? ` <span class="tsub">+${q.waiting} waiting</span>` : ""}</td><td class="num">${money(q.invested)}</td><td class="num">${money(q.value)}</td>
         <td class="num ${q.n ? (q.pnl >= 0 ? "o-win" : "o-loss") : ""}">${q.n ? pctTxt(q.pct) : "-"}</td><td class="num">${pc(w)}</td><td class="num">${pc(l)}</td><td class="num">${q.missed || "-"}</td></tr>`;
     }).join("");
+  const wi = es.filter(e => e.whatif);
+  $("#whatif").innerHTML = `<tr><th>Exit plan</th><th class="num">Trades</th><th class="num">Average return</th><th class="num">Ended with profit</th><th class="num">Worst trade</th><th class="num">Best trade</th><th class="num">Still open</th></tr>` +
+    (wi.length ? VARIANTS.map(([name], i) => {
+      const rs = wi.map(e => e.whatif[name]).filter(Boolean), net = rs.map(([m]) => m * (1 - COST) - 1);
+      const avg = net.length ? sum(net) / net.length * 100 : 0;
+      return `<tr${i === 0 ? ' style="font-weight:600"' : ""}><td>${name}</td><td class="num">${rs.length}</td>
+        <td class="num ${avg >= 0 ? "o-win" : "o-loss"}">${pctTxt(avg)}</td>
+        <td class="num">${net.length ? Math.round(net.filter(x => x > 0).length / net.length * 100) + "%" : "-"}</td>
+        <td class="num o-loss">${net.length ? pctTxt(Math.min(...net) * 100) : "-"}</td><td class="num o-win">${net.length ? pctTxt(Math.max(...net) * 100) : "-"}</td>
+        <td class="num">${rs.filter(([, done]) => !done).length}</td></tr>`;
+    }).join("") : `<tr><td colspan="7" class="empty">Fills in as the new trades (from Oct 6) get checked.</td></tr>`);
   if (!es.length) { $("#tracktable").innerHTML = `<tr><td class="empty">No trades yet. Run a scan: every coin that passes becomes a $250 paper trade.</td></tr>`; return; }
   const cls = e => isWin(e) ? "o-win" : isLoss(e) ? "o-loss" : "o-open";
   const x = v => v === null || v === undefined ? "-" : v.toFixed(2) + "x";
@@ -1289,7 +1338,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-06d";
+const VERSION = "2026-10-06e";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {

@@ -622,14 +622,14 @@ def run_scan(hours, chains):
 
 
 # ---------- paper portfolio ----------
-# Two strategies run side by side on every passed coin (Rainer, Oct 6 2026):
-#   "now": buy at the scan price.
-#   "dip": wait up to 12h for the price to dip to support (2h VWAP, the average price paid, weighted by size)
-#          and bounce (a green 15-minute candle that closes back above it). Stop just under the dip low.
-# Exit plan v2 for both: stop until 2x; at 2x sell half and move the stop to entry; at 3x sell 40%;
-# the last 10% (moonbag) rides a trailing stop 40% under its peak; time stop after 14 days.
-VWAP_HOURS, WATCH_HOURS, BREAK_PCT, MAX_RISK = 2, 12, 0.15, 0.35
-NOW_STOP, TRAIL, TIME_STOP_D = 0.70, 0.40, 14
+# The paper test copies the real Jupiter orders exactly (Rainer, Oct 6 2026). Every passed coin gets two trades:
+#   "now": a market buy at the scan price.
+#   "dip": the card's limit buy at support (2h VWAP), valid 12 hours. It fills when a candle touches the entry.
+# Both then hold three separate orders, like three Jupiter OTOCO orders, all with the card's stop-loss:
+#   leg A 50%: take profit at 2x.   leg B 40%: take profit at 3x.
+#   leg C 10% moonbag: after the fill, a 40% trailing stop instead of the fixed stop.
+# Time stop after 14 days. Inside one candle a stop counts before a target (the safe assumption).
+WATCH_HOURS, NOW_STOP, TRAIL, TIME_STOP_D = 12, 0.70, 0.40, 14
 
 
 def ts_of(iso):
@@ -644,6 +644,7 @@ def log_passed(track, res):
             if c["token"] in track or not c["price"]:
                 continue
             b = c.get("big") or {}
+            o = c.get("order") or {}
             base = dict(
                 token=c["token"], pair=c["pair"], chain=c["chain"], source=s["key"], symbol=c["symbol"], name=c["name"],
                 label=c.get("label") or "", warns=len(c["warns"]), logged=res["finished"], size=PAPER.get(s["key"], 250),
@@ -657,87 +658,84 @@ def log_passed(track, res):
                     bigBuys=b.get("buys", 0), bigBuyUsd=round(b.get("buyUsd", 0)), bigSells=b.get("sells", 0),
                     bigSellUsd=round(b.get("sellUsd", 0)), bigWallets=b.get("wallets", 0), bigBuyers=b.get("buyers", []),
                     whale=is_whale(c), hourUtc=now.hour, weekday=now.weekday(), window=res["hours"], auto=True,
-                    chart=c.get("chartF"), plannedEntry=(c.get("order") or {}).get("entry"), planOk=(c.get("order") or {}).get("ok")),
-                now=None, liq=None, best=None, t2=None, exit=None, final=False, checked=None, cash=0.0, pos=1.0)
-            track[c["token"]] = dict(base, strategy="now", entry=c["price"], entryT=ts_of(res["finished"]),
-                                     stop0=c["price"] * NOW_STOP, outcome="Open")
-            track["dip:" + c["token"]] = dict(base, strategy="dip", entry=None, entryT=None, stop0=None, zone=None,
-                                              outcome="Waiting for dip", why=None)
+                    chart=c.get("chartF"), plannedEntry=o.get("entry"), planOk=o.get("ok")),
+                now=None, liq=None, best=None, t2=None, exit=None, final=False, checked=None, cash=0.0, pos=1.0, legs=None)
+            stop = o["stop"] if o.get("ok") and o.get("stop", 0) < c["price"] else c["price"] * NOW_STOP
+            track[c["token"]] = dict(base, strategy="now", entry=c["price"], entryT=ts_of(res["finished"]), stop0=stop, outcome="Open")
+            if o.get("ok"):
+                track["dip:" + c["token"]] = dict(base, strategy="dip", entry=None, limit=o["entry"], entryT=None, stop0=o["stop"],
+                                                  zone=o.get("zone"), outcome="Waiting for fill", why=f"limit buy at {money(o['entry'])}")
+            else:
+                track["dip:" + c["token"]] = dict(base, strategy="dip", entry=None, limit=None, entryT=None, stop0=None, zone=o.get("zone"),
+                                                  outcome="No order", why=o.get("why") or "no entry plan", final=True)
             added += 1
     return added
 
 
-def vwap_before(candles, t0):
-    pre = [c for c in candles if t0 - VWAP_HOURS * 3600 <= c[0] < t0]
-    vol = sum(c[5] for c in pre)
-    if vol > 0:
-        return sum((c[2] + c[3] + c[4]) / 3 * c[5] for c in pre) / vol
-    return sum(c[4] for c in pre) / len(pre) if pre else None
-
-
-def watch_dip(e, candles):
-    """Look for the dip to support and the bounce. Sets entry, or Skipped / Missed."""
-    t0 = ts_of(e["logged"])
-    if e.get("zone") is None:
-        e["zone"] = vwap_before(candles, t0)
-    zone = e["zone"]
-    if not zone:
-        e.update(outcome="Skipped", why="no price history before the scan", final=True)
+def watch_fill(e, candles):
+    """The limit buy at support: fills when a candle touches it within 12 hours."""
+    t0, limit = ts_of(e["logged"]), e["limit"]
+    if limit >= e["price0"] * 0.999:  # at support already: the limit fills at once
+        e.update(entry=limit, entryT=t0, outcome="Open", why=f"filled at once at {money(limit)}")
         return
-    touched, low = False, None
     for t, o, h, l, c, v in sorted(x for x in candles if t0 <= x[0] < t0 + WATCH_HOURS * 3600):
-        if not touched and l <= zone:
-            touched, low = True, l
-        if not touched:
-            continue
-        low = min(low, l)
-        if c < zone * (1 - BREAK_PCT):
-            e.update(outcome="Skipped", why=f"broke below support {money(zone)}", final=True)
-            return
-        if c > zone and c > o:
-            stop = low * 0.98
-            risk = (c - stop) / c
-            if risk > MAX_RISK:
-                e.update(outcome="Skipped", why=f"stop would be {risk:.0%} below entry, too risky", final=True)
-                return
-            e.update(entry=c, entryT=t + 900, stop0=stop, outcome="Open", why=f"bounced off {money(zone)}")
+        if l <= limit:
+            e.update(entry=limit, entryT=t, outcome="Open", why=f"filled at {money(limit)}")
             return
     if time.time() > t0 + WATCH_HOURS * 3600:
-        e.update(outcome="Missed", why="dipped but never bounced" if touched else f"never dipped to {money(zone)}", final=True)
-    else:
-        last = max((x for x in candles if x[0] < t0 + WATCH_HOURS * 3600), default=None)
-        above = (last[4] / zone - 1) * 100 if last else 0
-        e["why"] = f"waiting for a dip to {money(zone)}" + (f" (price is {above:.0f}% above support)" if above > 30 else "")
+        e.update(outcome="Missed", why=f"price never came down to {money(limit)}", final=True)
 
 
 def simulate(e, candles):
-    """Replay exit plan v2 from the entry. Conservative: inside one candle the stop counts before a target."""
+    """Three separate orders after the fill, as set in Jupiter. See the note at the top of this section."""
     entry, stop, t_in = e["entry"], e["stop0"], e["entryT"]
-    cash, pos, hit2, hit3, peak, best = 0.0, 1.0, False, False, entry, 1.0
-    status, exit_t, t2, t3 = "Open", None, None, None
-    for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in):
+    leg = {"A": "open", "B": "open", "C": "open"}
+    part = {"A": 0.5, "B": 0.4, "C": 0.1}
+    cash, best, peak, t2, exit_t = 0.0, 1.0, entry, None, None
+    first = True
+    for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in - 899):
         best = max(best, h / entry)
-        if not hit2:
+        for k in ("A", "B"):
+            if leg[k] != "open":
+                continue
             if l <= stop:
-                cash, pos, status, exit_t = cash + pos * stop / entry, 0.0, "Stop hit", t
-                break
-            if h >= 2 * entry:
-                cash, pos, hit2, t2, status = cash + 1.0, 0.5, True, t, "2x hit, rest running"
-        if hit2 and not hit3:
-            if h >= 3 * entry:
-                cash, pos, hit3, t3, peak, status = cash + 1.2, 0.1, True, t, h, "3x hit, moonbag running"
-            elif t != t2 and l <= entry:
-                cash, pos, status, exit_t = cash + pos, 0.0, "2x, rest out at entry", t
-                break
-        if hit3 and t != t3:
-            peak = max(peak, h)
-            if l <= peak * (1 - TRAIL):
-                cash, pos, status, exit_t = cash + pos * peak * (1 - TRAIL) / entry, 0.0, "Moonbag trailed out", t
-                break
+                cash += part[k] * stop / entry
+                leg[k] = "stop"
+            elif not first and h >= (2 if k == "A" else 3) * entry:
+                cash += part[k] * (2 if k == "A" else 3)
+                leg[k] = "tp"
+                if k == "A":
+                    t2 = t
+        if leg["C"] == "open":
+            trail = peak * (1 - TRAIL)
+            if l <= trail:
+                cash += part["C"] * trail / entry
+                leg["C"] = "trail"
+            else:
+                peak = max(peak, h)
         if t - t_in > TIME_STOP_D * 86400:
-            cash, pos, status, exit_t = cash + pos * c / entry, 0.0, "Time stop", t
+            for k in leg:
+                if leg[k] == "open":
+                    cash += part[k] * c / entry
+                    leg[k] = "time"
+        if all(v != "open" for v in leg.values()):
+            exit_t = t
             break
-    e.update(cash=cash, pos=pos, best=best, t2=t2, exit=exit_t, outcome=status, final=pos == 0)
+        first = False
+    pos = sum(part[k] for k in leg if leg[k] == "open")
+    if leg["A"] == "stop":
+        status = "Stop hit"
+    elif leg["A"] == "tp" and leg["B"] == "tp":
+        status = "3x hit, moonbag trailed out" if leg["C"] != "open" else "3x hit, moonbag running"
+    elif leg["A"] == "tp" and leg["B"] == "stop":
+        status = "2x hit, rest stopped"
+    elif leg["A"] == "tp":
+        status = "2x hit, rest running"
+    elif any(v == "time" for v in leg.values()):
+        status = "Time stop"
+    else:
+        status = "Open"
+    e.update(cash=cash, pos=pos, best=best, t2=t2, exit=exit_t, outcome=status, legs=leg, final=pos == 0)
 
 
 def old_replay(candles, price0):
@@ -788,8 +786,8 @@ def check_results(track):
         age_days = (time.time() - ts_of(e["logged"])) / 86400
         if e.get("plan") == "v2":
             if candles:
-                if e["strategy"] == "dip" and not e.get("entry"):
-                    watch_dip(e, candles)
+                if e["strategy"] == "dip" and not e.get("entry") and e.get("limit"):
+                    watch_fill(e, candles)
                 if e.get("entry"):
                     simulate(e, candles)
             if e.get("entry") and not e["final"] and ((liq is not None and liq < 1000) or (now_p and now_p / e["entry"] < 0.1)):

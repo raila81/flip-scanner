@@ -883,6 +883,8 @@ async function checkResults(quiet) {
   const btn = $("#checkbtn"); btn.disabled = true;
   const say = m => { $("#trackstatus").textContent = m; if (quiet) $("#statustext").textContent = "Updating the paper portfolio: " + m; };
   try {
+    // An exit before the buy means the old replay counted the candle before the scan: check those again.
+    for (const e of entries) if (e.exit && e.exit * 1000 < Date.parse(e.logged)) { e.final = false; e.exit = null; e.outcome = "Open"; e.best = null; e.t2 = null; }
     // Coins logged less than an hour ago have no candles worth replaying yet.
     const todo = entries.filter(e => !e.final && (!quiet || Date.parse(e.logged) < Date.now() - 3600e3));
     for (let i = 0; i < todo.length; i++) {
@@ -900,7 +902,7 @@ async function checkResults(quiet) {
         const d = await getJSONSlow(`${GT}/${net}/pools/${e.pair}/ohlcv/${tf}`, say);
         const since = Date.parse(e.logged) / 1000;
         const candles = ((d.data || {}).attributes || {}).ohlcv_list || [];
-        const after = candles.filter(c => c[0] >= since - 900).sort((a, b) => a[0] - b[0]);
+        const after = candles.filter(c => c[0] >= since).sort((a, b) => a[0] - b[0]); // only candles that start after the scan
         if (after.length) {
           const r = replay(after, e.price0);
           e.best = r.best; e.bestT = r.bestT; e.t2 = r.t2;

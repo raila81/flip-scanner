@@ -586,6 +586,10 @@ def replay(candles, price0):
 
 
 def check_results(track):
+    # An exit before the buy means an old replay counted the candle before the scan: check those again.
+    for e in track.values():
+        if e.get("exit") and e["exit"] < datetime.fromisoformat(e["logged"]).timestamp():
+            e.update(final=False, exit=None, outcome="Open", best=None, t2=None)
     todo = [e for e in track.values() if not e.get("final")
             and datetime.fromisoformat(e["logged"]).timestamp() < time.time() - 3600]
     for i, e in enumerate(todo, 1):
@@ -605,7 +609,7 @@ def check_results(track):
         try:
             d = get_slow(f"{GT}/{net}/pools/{e['pair']}/ohlcv/{tf}")
             candles = ((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
-            after = sorted([c for c in candles if c[0] >= logged - 900])
+            after = sorted([c for c in candles if c[0] >= logged])  # only candles that start after the scan
             if after:
                 r = replay(after, e["price0"])
                 e["best"], e["bestT"], e["t2"] = r["best"], r["bestT"], r["t2"]

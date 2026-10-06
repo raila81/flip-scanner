@@ -7,6 +7,7 @@ This loop reads only the short lists, checks coins it has not seen, and paper-bu
 
 Writes (committed and pushed to the repo, the page reads them from GitHub Pages):
   data/fast.json   the coins found in the last hours, same shape as latest.json
+  data/books.json  the playbooks: 7 complete bot setups paper-traded side by side (scanner/playbooks.py)
   data/track.json  the paper portfolio (the GitHub scan no longer touches it: --no-track)
 State outside the repo (--state): seen.json, which coins were checked when.
 
@@ -23,6 +24,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import scan as S  # noqa: E402
+import playbooks as PB  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 S.PAUSE = 3.5            # GeckoTerminal allows 30 calls a minute; 2.5 s still drew "slow down" answers in the test, 3.5 s is safe
@@ -106,7 +108,46 @@ def check_one(k, src):
     return c
 
 
-def cycle(state, track, fast, out):
+def big_lane(rejected, seen, now):
+    """Safe coins the scanner rejects only for a market cap over $5M, for the "Big coins" playbook. Up to 2 per cycle."""
+    cards, done = [], 0
+    for r in sorted(rejected, key=lambda r: r["ageH"]):
+        if done >= 2:
+            break
+        if not r["reason"].startswith("market cap over"):
+            continue
+        st = seen.get(r["token"])
+        if st and now - st.get("last", 0) < RECHECK_S:
+            continue
+        seen.setdefault(r["token"], {"first": now, "firstAgeH": round(r["ageH"], 2)})
+        seen[r["token"]].update(last=now, status="big")
+        done += 1
+        src = S.SOURCES["pumpfun"]
+        S.say(f"Big coins: checking {r['symbol']} ({r['ageH']:.1f}h old, {S.money(r['mc'])})")
+        try:
+            c = check_one(dict(r, tpb=None, buyers24=0), src)
+        except Exception as e:
+            S.say(f"{r['symbol']}: check failed ({e})")
+            c = None
+        time.sleep(1)
+        if not c:
+            continue
+        c["fast"], c["firstSeenAgeH"], c["checkedAt"] = True, round(r["ageH"], 2), now_iso()
+        if S.is_pass(c):
+            S.add_info(c, src)
+            time.sleep(S.PAUSE)
+            S.add_big_trades(c, src)
+            if S.is_pass(c):
+                time.sleep(S.PAUSE)
+                S.add_levels(c, src, 100)
+            if c["verdict"] == "PASS" and c["warns"]:
+                c["verdict"] = "PASS WITH WARNINGS"
+            time.sleep(S.PAUSE)
+        cards.append(c)
+    return cards
+
+
+def cycle(state, track, fast, books, out):
     """One pass: read the lists, check the coins not seen yet, paper-buy the passes. Returns True if files changed."""
     t0 = time.time()
     S.FEED_CACHE.clear()
@@ -165,7 +206,11 @@ def cycle(state, track, fast, out):
                                    rejected=failed_safety + rejected, dropped=[list(x) for x in dropped],
                                    passed=[c for c in cards if S.is_pass(c)], unchecked=[c for c in cards if c["verdict"] == "NOT CHECKED"],
                                    failed=[c for c in cards if c["verdict"] == "FAIL"]))
+    # Big-coin lane: rejected only for size, checked for safety, paper traded by the "Big coins" playbook only
+    big_rej = {r["token"]: r for s in res["sources"] for r in s["rejected"] if r["reason"].startswith("market cap over")}
+    big_cards = big_lane(list(big_rej.values()), seen, now)
     res["finished"] = now_iso()
+    opened = PB.consider(books, [(c, s["key"]) for s in res["sources"] for c in s["passed"]] + [(c, "big") for c in big_cards if S.is_pass(c)])
     added = S.log_passed(track, res)
     for s in res["sources"]:
         for c in s["passed"]:
@@ -174,6 +219,9 @@ def cycle(state, track, fast, out):
                     track[k]["features"].update(fast=True, firstSeenAgeH=c["firstSeenAgeH"])
     ctl = S.log_control(track, res)
     changed = changed or added or ctl
+    res["sources"].append(dict(key="big", label="Fast: Big coins (over $5M market cap, safe)", looked=len(big_rej), pagesRead=read, pagesPlanned=planned,
+                               rejected=[], dropped=[], passed=[c for c in big_cards if S.is_pass(c)],
+                               unchecked=[c for c in big_cards if c["verdict"] == "NOT CHECKED"], failed=[c for c in big_cards if c["verdict"] == "FAIL"]))
     # Rolling view for the page: passes of the last 6 hours, fails of the last 2
     cut_p, cut_f = time.time() - KEEP_PASSED_H * 3600, time.time() - KEEP_FAILED_H * 3600
     old = {s["key"]: s for s in fast.get("sources", [])}
@@ -186,7 +234,7 @@ def cycle(state, track, fast, out):
     fast.clear()
     fast.update(res)
     n_pass = sum(len(s["passed"]) for s in res["sources"])
-    S.say(f"cycle done in {time.time() - t0:.0f}s: {len(pools)} pools, {added} new paper trades, {ctl} control, {n_pass} passes shown")
+    S.say(f"cycle done in {time.time() - t0:.0f}s: {len(pools)} pools, {added} new paper trades, {ctl} control, {opened} playbook trades, {n_pass} passes shown")
     return True  # fast.json changes every cycle (the finished time), track.json when trades were added
 
 
@@ -233,6 +281,7 @@ def main():
     os.makedirs(args.state, exist_ok=True)
     os.makedirs(args.out, exist_ok=True)
     state_path, track_path, fast_path = os.path.join(args.state, "seen.json"), os.path.join(args.out, "track.json"), os.path.join(args.out, "fast.json")
+    books_path = os.path.join(args.out, "books.json")
     code0 = code_hash()
     last_check = 0
     while True:
@@ -242,17 +291,23 @@ def main():
             if code_hash() != code0:
                 S.say("scanner code changed: restarting")
                 sys.exit(0)  # systemd starts us again with the new code
-        state, track, fast = load(state_path, {}), load(track_path, {}), load(fast_path, {})
+        state, track, fast, books = load(state_path, {}), load(track_path, {}), load(fast_path, {}), load(books_path, {})
         try:
-            cycle(state, track, fast, args.out)
+            cycle(state, track, fast, books, args.out)
         except Exception as e:
             S.say(f"cycle failed ({e})")
         if time.time() - last_check > CHECK_EVERY_S:
+            cache = {}
             try:
-                n = S.check_results(track)
+                n = S.check_results(track, cache)
                 S.say(f"{n} paper positions re-checked")
             except Exception as e:
                 S.say(f"re-check failed ({e})")
+            try:
+                n = PB.check_books(books, cache)
+                S.say(f"{n} playbook trades re-checked")
+            except Exception as e:
+                S.say(f"playbook re-check failed ({e})")
             last_check = time.time()
         # forget coins not seen for a day, so the state file stays small
         cut = time.time() - 86400
@@ -260,8 +315,9 @@ def main():
         save(state_path, state)
         save(track_path, track)
         save(fast_path, fast)
+        save(books_path, books)
         if not args.no_git:
-            push([os.path.relpath(track_path, ROOT), os.path.relpath(fast_path, ROOT)])
+            push([os.path.relpath(track_path, ROOT), os.path.relpath(fast_path, ROOT), os.path.relpath(books_path, ROOT)])
         if args.once or not args.loop:
             break
         time.sleep(max(20, CYCLE_S - (time.time() - started)))

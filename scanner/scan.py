@@ -35,7 +35,8 @@ RH_LOCKERS = {"0x267444d099b10fb5ed7c3cc7b7c767adca574952": "Pons launch locker"
 BURN = {"0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead"}
 POOL_WORDS = re.compile(r"pool|amm|vault|lock|escrow|streamflow|meteora|raydium|pump fun amm|pumpswap", re.I)
 NOT_NEW = {"weth", "eth", "usdg", "usdc", "usdt", "sol", "wsol", "wbtc", "btc", "spy", "qqq", "nvda", "tsla",
-           "aapl", "msft", "amzn", "goog", "googl", "meta", "hood", "coin", "gme", "amc", "pltr", "mstr"}
+           "aapl", "msft", "amzn", "goog", "googl", "meta", "hood", "coin", "gme", "amc", "pltr", "mstr",
+           "usdf", "usd1", "usde", "pyusd", "fdusd", "usds", "dai", "eurc", "cbbtc", "jitosol", "msol", "bsol", "jupsol"}
 FAME = re.compile(
     r"\b(elon|musk|trump|melania|barron|cz|binance|saylor|vitalik|kanye|ye|drake|taylor|swift|ibm|google|gemini|grok|"
     r"openai|chatgpt|gpt|claude|anthropic|apple|tesla|nvidia|microsoft|amazon|meta|facebook|robinhood|mercedes|bmw|"
@@ -921,14 +922,14 @@ def old_replay(candles, price0):
 CHECK_BUDGET_S = 600
 
 
-def check_results(track):
+def check_results(track, cache=None):
     for e in track.values():  # an exit before the buy came from an old replay bug: check again
         if e.get("plan") != "v2" and e.get("exit") and e["exit"] < ts_of(e["logged"]):
             e.update(final=False, exit=None, outcome="Open", best=None, t2=None)
     todo = [e for e in track.values() if not e.get("final") and ts_of(e["logged"]) < time.time() - 3600]
     # Oldest-checked first, inside a time budget, so a run never outgrows GitHub's limit as the record grows.
     todo.sort(key=lambda e: (e.get("checked") or "", e["logged"]))
-    cache, started = {}, time.time()
+    cache, started = {} if cache is None else cache, time.time()
     for i, e in enumerate(todo, 1):
         if time.time() - started > CHECK_BUDGET_S:
             say(f"Time budget used: {len(todo) - i + 1} trades wait for the next run")

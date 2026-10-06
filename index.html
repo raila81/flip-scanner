@@ -240,6 +240,7 @@ table.track{min-width:980px}
       <button data-f="movers">Movers</button>
       <button data-f="small">Small pools</button>
       <button data-f="fresh">Fresh graduates</button>
+      <button data-f="big">Big coins</button>
       <button data-f="clean">No warnings only</button>
       <button data-f="social">Has X or Telegram</button>
       <button data-f="utility">Says utility</button>
@@ -277,6 +278,9 @@ table.track{min-width:980px}
     <h2>What-if exits</h2>
     <div class="twrap"><table class="baskets" id="whatif"></table></div>
     <p class="tsub">The same trades (both strategies, since Oct 6) replayed with other ways to sell. It shows which exit plan would have made the most, before you change the real orders. Stops fill 10% worse than their price, like a fast crash. Open trades count at today's price. Under about 30 trades the numbers mean little.</p>
+    <h2>Playbooks: 7 bot setups, side by side</h2>
+    <div class="twrap"><table class="baskets" id="books"></table></div>
+    <p class="tsub" id="booksnote">Each playbook is a complete bot setup the real bot can copy 1:1 with Jupiter: which passes it takes, market or limit buy, the exact sell orders, a time stop, bet size, max open coins and a daily loss limit. All of them paper trade the same coins from the VPS fast scan (since Oct 6, 2026). Costs of 3% are taken off. Open trades count at today's price. A playbook earns trust only when it is green in both the older and the newer half of its trades, and under about 30 closed trades the numbers mean little.</p>
     <h2>Control group: did the filters throw away winners?</h2>
     <div class="twrap"><table class="baskets" id="control"></table></div>
     <p class="tsub">Each GitHub run also follows up to 10 coins the filters rejected, as paper "buy now" trades with the card plan. They never count in your portfolio. If a reject reason keeps doing better than the passed coins, that filter is too strict. Under about 20 coins per row the numbers mean little.</p>
@@ -824,7 +828,7 @@ function cardHtml(c, srcKey) {
   const verdict = c.verdict === "PASS" ? `<span class="badge b-pass">Pass</span>`
     : `<span class="badge b-warn">Pass, ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
   const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : srcKey === "movers" ? `<span class="badge b-sol">Mover</span>`
-    : srcKey === "small" ? `<span class="badge b-warn">Small pool</span>` : srcKey === "fresh" ? `<span class="badge b-warn">Fresh graduate</span>` : `<span class="badge b-rh">Robinhood</span>`;
+    : srcKey === "small" ? `<span class="badge b-warn">Small pool</span>` : srcKey === "fresh" ? `<span class="badge b-warn">Fresh graduate</span>` : srcKey === "big" ? `<span class="badge b-sol">Big coin, over $5M</span>` : `<span class="badge b-rh">Robinhood</span>`;
   const fastBadge = c.fast ? `<span class="badge b-pass" title="Found by the fast scan on the VPS, checked every 2 minutes">Fast scan, seen at ${c.firstSeenAgeH}h old</span>` : "";
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
   const tot = (c.buys24 || 0) + (c.sells24 || 0);
@@ -1320,6 +1324,7 @@ function renderControl(es) {
       : `<tr><td colspan="7" class="empty">Starts filling with the next GitHub runs.</td></tr>`);
 }
 function renderTrack() {
+  renderBooks();
   const es = mine().sort((a, b) => Date.parse(b.logged) - Date.parse(a.logged));
   renderControl(es);
   updateTrackCount(); renderPaper();
@@ -1421,7 +1426,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-06j";
+const VERSION = "2026-10-06k";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {
@@ -1450,6 +1455,39 @@ function mergeScans(gh, fast) {
   const later = Date.parse(fast.finished) > Date.parse(gh.finished) ? fast.finished : gh.finished;
   return {...gh, finished: later, sources: [...fast.sources, ...gh.sources.map(s => ({...s, passed: s.passed.filter(c => !seen.has(c.token))}))]};
 }
+let books = null;
+function renderBooks() {
+  const el = $("#books");
+  if (!el) return;
+  if (!books || !books.books) { el.innerHTML = `<tr><td class="tsub">No playbook data yet. The VPS fast scan writes it every few minutes.</td></tr>`; return; }
+  const all = Object.values(books.trades || {});
+  const m = e => e.entry ? e.cash + e.pos * ((e.now ?? e.entry) / e.entry) : null;
+  const net = e => m(e) * (1 - COST) - 1;
+  const pct = x => `<span class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%</span>`;
+  const rows = Object.entries(books.books).map(([key, b]) => {
+    const ts = all.filter(e => e.book === key), entered = ts.filter(e => e.entry), closed = entered.filter(e => e.final && e.outcome !== "Bad data");
+    const waiting = ts.filter(e => !e.entry && !e.final).length, open = entered.filter(e => !e.final).length;
+    const missed = ts.filter(e => e.outcome === "Missed").length;
+    const usd = entered.reduce((n, e) => n + e.size * net(e), 0);
+    const avg = xs => xs.length ? xs.reduce((a, c) => a + c, 0) / xs.length : null;
+    const won = closed.length ? closed.filter(e => net(e) > 0).length / closed.length : null;
+    const sorted = closed.slice().sort((a, b) => Date.parse(a.logged) - Date.parse(b.logged)), h = Math.floor(sorted.length / 2);
+    const older = avg(sorted.slice(0, h).map(net)), newer = avg(sorted.slice(h).map(net));
+    const days = {};
+    for (const e of closed) { const d = new Date(e.exit * 1000).toISOString().slice(0, 10); days[d] = (days[d] || 0) + e.size * net(e); }
+    const worst = Object.values(days).length ? Math.min(...Object.values(days)) : null;
+    const sk = Object.entries(b.skipped || {}).map(([k, n]) => `${n} skipped (${k})`).join(", ");
+    return {key, b, n: entered.length, waiting, open, closed: closed.length, missed, won, avgN: avg(closed.map(net)), usd, worst, older, newer, sk};
+  }).sort((a, b) => b.usd - a.usd);
+  el.innerHTML = `<tr><th>Playbook</th><th class="num">Trades</th><th class="num">Waiting</th><th class="num">Open</th><th class="num">Closed</th><th class="num">Won</th><th class="num">Avg (closed)</th><th class="num">Net $</th><th class="num">Worst day</th><th class="num">Older half</th><th class="num">Newer half</th></tr>` +
+    rows.map(r => `<tr><td><b>${esc(r.b.label)}</b><div class="tsub">${esc(r.b.desc)} Bet $${r.b.size}, max ${r.b.maxOpen} open, pause after -$${r.b.dayLoss} a day.${r.sk ? " " + esc(r.sk) + "." : ""}${r.missed ? ` ${r.missed} limit buy${r.missed === 1 ? "" : "s"} never filled.` : ""}</div></td>
+      <td class="num">${r.n}</td><td class="num">${r.waiting}</td><td class="num">${r.open}</td><td class="num">${r.closed}</td>
+      <td class="num">${r.won === null ? "-" : (r.won * 100).toFixed(0) + "%"}</td><td class="num">${r.avgN === null ? "-" : pct(r.avgN)}</td>
+      <td class="num"><b class="${r.usd >= 0 ? "up" : "down"}">${r.usd >= 0 ? "+" : "-"}$${Math.abs(r.usd).toFixed(0)}</b></td>
+      <td class="num">${r.worst === null ? "-" : `<span class="${r.worst >= 0 ? "up" : "down"}">${r.worst >= 0 ? "+" : "-"}$${Math.abs(r.worst).toFixed(0)}</span>`}</td>
+      <td class="num">${r.older === null ? "-" : pct(r.older)}</td><td class="num">${r.newer === null ? "-" : pct(r.newer)}</td></tr>`).join("");
+  if (books.updated) $("#booksnote").textContent = $("#booksnote").textContent.replace(/ Last update:.*$/, "") + ` Last update: ${ago(books.updated)}.`;
+}
 async function loadAuto() {
   if (location.protocol === "file:") return;
   const bust = "?t=" + Math.floor(Date.now() / 120000);
@@ -1462,6 +1500,7 @@ async function loadAuto() {
     }
     if (merged) { saveTrack(); renderPaper(); if (document.body.classList.contains("view-track")) renderTrack(); }
   } catch (e) { /* no automatic record yet */ }
+  try { books = await getJSON("data/books.json" + bust); renderBooks(); } catch (e) { /* no playbook data yet */ }
   try {
     const gh = await getJSON("data/latest.json" + bust).catch(() => null);
     let fast = null;

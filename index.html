@@ -157,7 +157,8 @@ table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{padding:9px 11px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
 th{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 tr:last-child td{border-bottom:0}
-td.num,th.num{font-family:"JetBrains Mono",monospace;text-align:right;font-size:12.5px}
+td.num,th.num{font-family:"JetBrains Mono",monospace;text-align:right;font-size:12.5px;line-height:1.3}
+td .tsub{font-family:Inter,sans-serif;font-size:11px;margin:0}
 table.track{min-width:980px}
 .o-win{color:var(--lime);font-weight:700} .o-loss{color:var(--rose);font-weight:700} .o-open{color:var(--muted)}
 @media (max-width:720px){.controls{grid-template-columns:1fr}.radar{display:none}.hero{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.summary ul{columns:1}.hero .big-num{font-size:34px}}
@@ -871,7 +872,8 @@ function planResult(e) {
   return e.now && e.price0 ? e.now / e.price0 : 1;
 }
 const sizeOf = e => e.size || PAPER;
-const positionValue = e => e.checked ? sizeOf(e) * planResult(e) * (1 - COST) : sizeOf(e);
+const marked = e => !!e.checked || (e.now !== null && e.now !== undefined); // we know a price, so we can value it
+const positionValue = e => marked(e) ? sizeOf(e) * planResult(e) * (1 - COST) : sizeOf(e);
 const tradePnl = e => positionValue(e) - sizeOf(e);
 const exitTime = e => e.exit ? e.exit * 1000 : null;
 
@@ -936,7 +938,36 @@ const BASKETS = [
 function portfolio(es) {
   const invested = sum(es.map(sizeOf)), value = sum(es.map(positionValue));
   return {n: es.length, invested, value, pnl: value - invested, pct: invested ? (value / invested - 1) * 100 : 0,
-    closed: es.filter(e => e.final).length, open: es.filter(e => !e.final).length, unchecked: es.filter(e => !e.checked).length};
+    closed: es.filter(e => e.final).length, open: es.filter(e => !e.final).length, unchecked: es.filter(e => !marked(e)).length};
+}
+
+// ---------- live prices for open positions (DexScreener, one call per 30 coins, no quota trouble) ----------
+let pricesAt = null;
+async function refreshPrices() {
+  const open = Object.values(track).filter(e => !e.final);
+  if (!open.length) return;
+  const byChain = {};
+  for (const e of open) (byChain[e.chain] = byChain[e.chain] || []).push(e);
+  for (const [chain, es] of Object.entries(byChain)) {
+    for (let i = 0; i < es.length; i += 30) {
+      const batch = es.slice(i, i + 30);
+      try {
+        const pairs = await getJSON(`https://api.dexscreener.com/tokens/v1/${chain}/${batch.map(e => e.token).join(",")}`);
+        const best = {};
+        for (const p of pairs || []) {
+          const t = (p.baseToken || {}).address, l = (p.liquidity || {}).usd || 0;
+          if (t && (!best[t.toLowerCase()] || l > ((best[t.toLowerCase()].liquidity || {}).usd || 0))) best[t.toLowerCase()] = p;
+        }
+        for (const e of batch) {
+          const p = best[e.token.toLowerCase()];
+          if (p) { e.now = num(p.priceUsd); e.liq = (p.liquidity || {}).usd || 0; e.chg1 = (p.priceChange || {}).h1 || 0; e.live = Date.now(); }
+        }
+      } catch (err) { /* keep old numbers */ }
+    }
+  }
+  pricesAt = Date.now();
+  saveTrack(); renderPaper();
+  if (document.body.classList.contains("view-track")) renderTrack();
 }
 const signed = x => (x >= 0 ? "+" : "-") + money(Math.abs(x));
 function renderPaper() {
@@ -978,7 +1009,7 @@ function renderTrack() {
   const p = portfolio(es);
   countUp($("#heroValue"), p.value, v => money(v));
   $("#heroPl").innerHTML = es.length ? `<span class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</span> <span class="tsub">on ${money(p.invested)} put in</span>` : "Every coin that passes a scan becomes a paper trade. The hourly scan on GitHub fills this by itself.";
-  $("#heroSub").textContent = es.length ? `${p.n} trades: ${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} not checked yet` : ""}` : "";
+  $("#heroSub").textContent = es.length ? `${p.n} trades: ${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} without a price yet` : ""}${pricesAt ? `. Live prices ${ago(pricesAt)}` : ""}` : "";
   drawCurve(es);
   const closed = es.filter(e => e.final && e.checked);
   const wins = closed.filter(e => tradePnl(e) > 0), losses = closed.filter(e => tradePnl(e) <= 0);
@@ -1011,7 +1042,7 @@ function renderTrack() {
   const x = v => v === null || v === undefined ? "-" : v.toFixed(2) + "x";
   $("#tracktable").innerHTML = `<tr><th>Bought</th><th>Coin</th><th>Source</th><th>Label</th><th class="num">Warn</th><th class="num">Entry</th><th class="num">Size</th><th class="num">Now</th><th class="num">Best</th><th>Status</th><th>Exit</th><th class="num">Held</th><th class="num">P&amp;L</th><th class="num">Return</th><th></th></tr>` +
     es.map(e => {
-      const pnl = e.checked ? tradePnl(e) : null;
+      const pnl = marked(e) ? tradePnl(e) : null;
       return `<tr>
       <td>${when(e.logged)}</td>
       <td><b>${esc(e.symbol)}</b> <span class="tsub">${esc(e.name)}</span></td>
@@ -1020,9 +1051,9 @@ function renderTrack() {
       <td class="num">${e.warns}</td>
       <td class="num">${money(e.price0)}</td>
       <td class="num">$${sizeOf(e)}</td>
-      <td class="num">${e.now === null ? "-" : x(e.now / e.price0)}</td>
+      <td class="num">${e.now === null || e.now === undefined ? "-" : `<span class="${e.now >= e.price0 ? "up" : "down"}">${x(e.now / e.price0)}</span><br><span class="tsub">${money(e.now)}${e.chg1 ? ` · 1h ${e.chg1 >= 0 ? "+" : ""}${Number(e.chg1).toFixed(0)}%` : ""}</span>`}</td>
       <td class="num">${x(e.best)}</td>
-      <td class="${cls(e.outcome)}">${esc(e.outcome)}${e.final ? "" : e.checked ? " (so far)" : ""}</td>
+      <td class="${cls(e.outcome)}">${esc(e.outcome)}${e.final ? "" : e.checked ? " (so far)" : marked(e) ? " (live)" : ""}</td>
       <td>${e.exit ? when(exitTime(e)) : e.t2 ? "half sold " + when(e.t2 * 1000) : "-"}</td>
       <td class="num">${dur((e.exit ? exitTime(e) : Date.now()) - Date.parse(e.logged))}</td>
       <td class="num ${pnl === null ? "" : pnl >= 0 ? "o-win" : "o-loss"}">${pnl === null ? "-" : signed(pnl)}</td>
@@ -1049,7 +1080,7 @@ $("#clearbtn").onclick = () => { if (confirm("Delete the whole paper portfolio o
 document.querySelectorAll(".views button").forEach(b => b.onclick = () => {
   document.querySelectorAll(".views button").forEach(x => x.classList.toggle("on", x === b));
   document.body.classList.toggle("view-track", b.dataset.view === "track");
-  if (b.dataset.view === "track") renderTrack();
+  if (b.dataset.view === "track") { renderTrack(); if (!pricesAt || Date.now() - pricesAt > 120000) refreshPrices(); }
 });
 try { $("#autocheck").checked = localStorage.getItem("flipAuto") !== "off"; } catch (e) {}
 $("#autocheck").onchange = () => { try { localStorage.setItem("flipAuto", $("#autocheck").checked ? "on" : "off"); } catch (e) {} };
@@ -1080,8 +1111,8 @@ async function loadAuto() {
     }
   } catch (e) { /* no automatic scan yet */ }
 }
-loadAuto();
-setInterval(loadAuto, 5 * 60 * 1000);
+loadAuto().then(refreshPrices);
+setInterval(() => loadAuto().then(refreshPrices), 5 * 60 * 1000);
 </script>
 </body>
 </html>

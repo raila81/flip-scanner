@@ -492,6 +492,52 @@ def add_big_trades(c, src):
     c["big"] = big
 
 
+# ---------- order plan: a suggested entry and the exact orders to set (Oct 6 2026) ----------
+# Entry = support: the 2-hour VWAP (average price paid, weighted by size). Stop under the 2-hour low.
+# Orders are written for Jupiter OTOCO (limit buy that arms its own take-profit and stop-loss).
+def make_plan(c, zone, low2h, size):
+    price = c["price"]
+    if not zone or not price:
+        return {"ok": False, "why": "No price history yet to find support."}
+    rh = c["chain"] == "robinhood"
+    if price < zone * 0.85:
+        return {"ok": False, "zone": zone, "why": f"Price is {(1 - price / zone) * 100:.0f}% under support ({money(zone)}): it broke down. No order."}
+    at_support = price <= zone * 1.03
+    entry = min(price, zone)
+    stop = (low2h or entry * 0.8) * 0.98
+    if stop >= entry * 0.9:
+        stop = entry * 0.85  # give it at least 15% room: these coins swing
+    risk = (entry - stop) / entry
+    if risk > 0.35:
+        return {"ok": False, "zone": zone, "why": f"Stop would sit {risk:.0%} under entry, under the 2-hour low {money(low2h)}. Too risky, no order."}
+    above = (price / zone - 1) * 100
+    why = (f"Support is {money(zone)}, the average price buyers paid in the last 2 hours. "
+           + ("Price is at support now. " if at_support else f"Price is {above:.0f}% above it, so the order waits for a dip. ")
+           + f"The stop sits under the 2-hour low ({money(low2h)}), {risk:.0%} below entry.")
+    bet = round(min(size, c["liq"] * 0.02))
+    legs = [{"part": 0.5, "usd": round(bet * 0.5), "tp": entry * 2, "label": "take profit at 2x"},
+            {"part": 0.4, "usd": round(bet * 0.4), "tp": entry * 3, "label": "take profit at 3x"},
+            {"part": 0.1, "usd": bet - round(bet * 0.5) - round(bet * 0.4), "tp": None, "label": "moonbag: after it fills, swap the stop for a 40% trailing stop"}]
+    return {"ok": True, "zone": zone, "low2h": low2h, "entry": entry, "stop": stop, "risk": risk, "atSupport": at_support,
+            "aboveSupport": above, "bet": bet, "expiryH": 12, "legs": legs, "why": why, "manual": rh}
+
+
+def add_levels(c, src, size):
+    c["order"] = None
+    if not c.get("pair"):
+        return
+    try:
+        d = get_slow(f"{GT}/{src['network']}/pools/{c['pair']}/ohlcv/minute?aggregate=15&limit=12")
+        candles = sorted(((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or [])
+    except Exception:
+        return
+    last2h = candles[-8:]
+    vol = sum(x[5] for x in last2h)
+    zone = (sum((x[2] + x[3] + x[4]) / 3 * x[5] for x in last2h) / vol) if vol > 0 else (sum(x[4] for x in last2h) / len(last2h) if last2h else None)
+    low2h = min((x[3] for x in last2h), default=None)
+    c["order"] = make_plan(c, zone, low2h, size)
+
+
 def is_whale(c):
     b = c.get("big") or {}
     return bool(b.get("top") and b["top"]["kind"] == "buy" and b["top"]["usd"] >= WHALE)
@@ -541,6 +587,10 @@ def run_scan(hours, chains):
             time.sleep(PAUSE)
             say(f"{src['label']}: reading big trades {i} of {len(to_read)} ({c['symbol']})")
             add_big_trades(c, src)
+            if is_pass(c):
+                time.sleep(PAUSE)
+                say(f"{src['label']}: finding entry and targets {i} of {len(to_read)} ({c['symbol']})")
+                add_levels(c, src, PAPER.get(key, 250))
             if c["verdict"] == "PASS" and c["warns"]:
                 c["verdict"] = "PASS WITH WARNINGS"
             time.sleep(PAUSE)

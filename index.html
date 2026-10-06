@@ -122,6 +122,23 @@ label.src:has(input:checked){border-color:var(--line)}
 .links a:hover{background:var(--accent);color:var(--accent-ink)}
 .links span{opacity:.4;cursor:default;text-decoration:line-through}
 .warns{margin:0;padding:8px 10px 8px 26px;background:var(--amber-bg);color:var(--amber);border-radius:10px;font-size:12.5px}
+.order{border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 8%,transparent),transparent)}
+.order.skip{background:var(--chip)}
+.order .h{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.order b{font:700 14px "JetBrains Mono",monospace}
+.order i{display:block;font-style:normal;font-size:11px;color:var(--muted)}
+.order p{margin:0;font-size:12px;color:var(--muted);line-height:1.4}
+.order .entry{display:grid;grid-template-columns:1.2fr 1fr .8fr;gap:8px}
+.order .legs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.order .leg{background:var(--chip);border-radius:9px;padding:6px 8px}
+.order .leg span{display:block;font-size:10.5px;color:var(--muted)}
+.order .leg b{color:var(--lime);font-size:12.5px}
+.order .howto{font-size:11.5px;color:var(--muted);display:flex;gap:8px;align-items:flex-start;justify-content:space-between}
+.order .howto button{flex:none;font-size:12px;padding:6px 10px;border-radius:9px;background:var(--accent);color:var(--accent-ink);border:0;cursor:pointer;font-weight:600}
+.newb{font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 7px;border-radius:999px;background:var(--accent);color:var(--accent-ink);margin-left:6px;vertical-align:middle;animation:pulse 2s infinite}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(120%);background:var(--panel-solid);border:1px solid var(--accent);color:var(--ink);padding:12px 16px;border-radius:14px;box-shadow:var(--shadow),var(--glow);z-index:50;display:flex;gap:12px;align-items:center;transition:transform .35s;max-width:calc(100vw - 32px);font-size:14px}
+.toast.show{transform:translateX(-50%) translateY(0)}
+.toast button{border:0;background:var(--accent);color:var(--accent-ink);border-radius:9px;padding:7px 12px;font-weight:600;cursor:pointer}
 .ladder{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:12px}
 .ladder div{background:var(--chip);border-radius:10px;padding:8px;text-align:center}
 .ladder b{display:block;font:700 13px "JetBrains Mono",monospace;margin-top:2px}
@@ -257,6 +274,7 @@ table.track{min-width:980px}
     <p class="tsub">The hourly GitHub scan replays 15-minute candles to see what each trade did. If a target and the stop land in the same candle, the stop counts first. "Check results" does the same right now from this browser. Trades from before Oct 6 keep the old plan.</p>
   </div>
 
+  <div class="toast" id="toast"><span id="toasttext"></span><button type="button" id="toastbtn">Show</button></div>
   <footer>Safety scan only. A pass means no traps were found, not that the price will go up. Paper money, not advice.</footer>
 </div>
 
@@ -623,6 +641,48 @@ async function addBigTrades(c, src, say) {
   c.big = big;
 }
 
+// ---------- order plan: a suggested entry and the exact orders to set (same as scanner/scan.py make_plan) ----------
+// Entry = support: the 2-hour VWAP (average price paid, weighted by size). Stop under the 2-hour low.
+// Orders are written for Jupiter OTOCO (a limit buy that arms its own take-profit and stop-loss).
+function makePlan(c, zone, low2h, size) {
+  const price = c.price;
+  if (!zone || !price) return {ok: false, why: "No price history yet to find support."};
+  if (price < zone * 0.85) return {ok: false, zone, why: `Price is ${Math.round((1 - price / zone) * 100)}% under support (${money(zone)}): it broke down. No order.`};
+  const atSupport = price <= zone * 1.03, entry = Math.min(price, zone);
+  let stop = (low2h || entry * 0.8) * 0.98;
+  if (stop >= entry * 0.9) stop = entry * 0.85; // give it at least 15% room: these coins swing
+  const risk = (entry - stop) / entry;
+  if (risk > 0.35) return {ok: false, zone, why: `Stop would sit ${Math.round(risk * 100)}% under entry, under the 2-hour low ${money(low2h)}. Too risky, no order.`};
+  const above = (price / zone - 1) * 100;
+  const why = `Support is ${money(zone)}, the average price buyers paid in the last 2 hours. ` +
+    (atSupport ? "Price is at support now. " : `Price is ${Math.round(above)}% above it, so the order waits for a dip. `) +
+    `The stop sits under the 2-hour low (${money(low2h)}), ${Math.round(risk * 100)}% below entry.`;
+  const bet = Math.round(Math.min(size, c.liq * 0.02)), a = Math.round(bet * 0.5), b = Math.round(bet * 0.4);
+  return {ok: true, zone, low2h, entry, stop, risk, atSupport, aboveSupport: above, bet, expiryH: 12, why, manual: c.chain === "robinhood",
+    legs: [{part: 0.5, usd: a, tp: entry * 2, label: "take profit at 2x"}, {part: 0.4, usd: b, tp: entry * 3, label: "take profit at 3x"},
+      {part: 0.1, usd: bet - a - b, tp: null, label: "moonbag: after it fills, swap the stop for a 40% trailing stop"}]};
+}
+async function addLevels(c, src, size, say) {
+  c.order = null;
+  if (!c.pair) return;
+  let candles;
+  try { candles = (((await getJSONSlow(`${GT}/${src.network}/pools/${c.pair}/ohlcv/minute?aggregate=15&limit=12`, say)).data || {}).attributes || {}).ohlcv_list || []; }
+  catch (e) { return; }
+  const last2h = candles.sort((x, y) => x[0] - y[0]).slice(-8);
+  const vol = sum(last2h.map(x => x[5]));
+  const zone = vol > 0 ? sum(last2h.map(x => (x[2] + x[3] + x[4]) / 3 * x[5])) / vol : (last2h.length ? sum(last2h.map(x => x[4])) / last2h.length : null);
+  const low2h = last2h.length ? Math.min(...last2h.map(x => x[3])) : null;
+  c.order = makePlan(c, zone, low2h, size);
+}
+function planText(c) {
+  const o = c.order;
+  if (!o || !o.ok) return "";
+  const lines = [`${c.symbol} (${c.name})`, `Token: ${c.token}`, `Bet: $${o.bet} split into 3 orders. All buy at ${money(o.entry)}, valid 12 hours.`];
+  o.legs.forEach((l, i) => lines.push(`Order ${i + 1}: buy $${l.usd} at ${money(o.entry)}, ` + (l.tp ? `take profit ${money(l.tp)}, ` : "") + `stop-loss ${money(o.stop)}` + (l.tp ? "" : ". After it fills, replace the stop with a 40% trailing stop.")));
+  lines.push(`Why: ${o.why}`);
+  return lines.join("\n");
+}
+
 // ---------- the scan ----------
 async function runScan(hours, chains, say, progress, onSource) {
   scanRun = {stopped: false};
@@ -670,6 +730,11 @@ async function runScan(hours, chains, say, progress, onSource) {
       checkStop();
       say(`${src.label}: reading big trades ${i + 1} of ${toRead.length} (${toRead[i].symbol})`);
       await addBigTrades(toRead[i], src, say); // can turn a pass into a FAIL (creator selling)
+      if (toRead[i].verdict !== "FAIL") {
+        await sleep(PAUSE); checkStop();
+        say(`${src.label}: finding entry and targets ${i + 1} of ${toRead.length} (${toRead[i].symbol})`);
+        await addLevels(toRead[i], src, PAPER_BY[key] || 250, say);
+      }
       if (toRead[i].verdict === "PASS" && toRead[i].warns.length) toRead[i].verdict = "PASS WITH WARNINGS";
       tick();
       await sleep(PAUSE);
@@ -685,7 +750,7 @@ async function runScan(hours, chains, say, progress, onSource) {
 }
 
 // ---------- scan view ----------
-let filter = "all", data = null, running = false;
+let filter = "all", data = null, running = false, newTokens = new Set(); // newTokens: coins that arrived with the latest automatic scan
 try { const t = localStorage.getItem("flipTheme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 $("#theme").onclick = () => {
   const cur = document.documentElement.dataset.theme || "dark";
@@ -719,7 +784,7 @@ function cardHtml(c, srcKey) {
       <p>${c.desc ? esc(c.desc) : "<i>The creator wrote no description.</i>"}</p></div>`;
   return `<article class="card ${c.verdict === "PASS" ? "v-pass" : "v-warn"}">
     <div class="top">${img}
-      <div class="title"><div class="sym">${esc(c.symbol)}</div><div class="name">${esc(c.name)}</div></div>
+      <div class="title"><div class="sym">${esc(c.symbol)}${newTokens.has(c.token) ? `<span class="newb">NEW</span>` : ""}</div><div class="name">${esc(c.name)}</div></div>
       <div class="badges">${verdict}${chain}</div>
     </div>
     ${about}
@@ -736,17 +801,29 @@ function cardHtml(c, srcKey) {
     ${pressure}
     ${bigHtml}
     ${warns}
-    <div class="ladder-foot"><span>Flip plan from ${money(c.price)}</span><span>Time stop 24 to 48h</span></div>
-    <div class="ladder">
-      <div class="s">Stop -33%<b>${money(c.plan.stop)}</b></div>
-      <div class="w">Sell half at 2x<b>${money(c.plan.x2)}</b></div>
-      <div class="w">Sell rest at 3x<b>${money(c.plan.x3)}</b></div>
-    </div>
+    ${orderHtml(c)}
     <div class="links">
       ${link("Chart", c.chart)}${link("X", c.x)}${link("Telegram", c.telegram)}${link("Website", c.website)}${c.bubblemap ? link("Bubble map", c.bubblemap) : ""}
       <button type="button" data-copy="${esc(c.token)}">Copy address</button>
     </div>
   </article>`;
+}
+function orderHtml(c) {
+  const o = c.order;
+  if (!o) return `<div class="ladder-foot"><span>No entry plan yet: the next scan adds one</span></div>`;
+  if (!o.ok) return `<div class="order skip"><span class="h">Suggested entry</span><b>No order</b><p>${esc(o.why)}</p></div>`;
+  const legs = o.legs.map((l, i) => `<div class="leg"><span>Order ${i + 1} · $${l.usd}</span><b>${l.tp ? `TP ${money(l.tp)}` : "Moonbag"}</b><i>${l.tp ? (i ? "3x" : "2x") : "trail 40%"}</i></div>`).join("");
+  return `<div class="order">
+    <div class="entry"><div><span class="h">Suggested entry</span><b>${money(o.entry)}</b><i>${o.atSupport ? "at support now" : `limit buy, ${Math.round(o.aboveSupport)}% under price`}</i></div>
+      <div><span class="h">Stop-loss</span><b class="down">${money(o.stop)}</b><i>${Math.round(o.risk * 100)}% below entry</i></div>
+      <div><span class="h">Bet</span><b>$${o.bet}</b><i>3 orders, 12h</i></div></div>
+    <div class="legs">${legs}</div>
+    <p>${esc(o.why)}</p>
+    <div class="howto">${o.manual
+      ? "Robinhood Chain has no limit orders yet. Set a price alert at the entry and buy by hand in MetaMask, then sell by hand at the targets."
+      : "Jupiter, Limit tab: make 3 buy orders at the entry price with Take Profit and Stop Loss on (OTOCO). Expiry: custom, 12 hours."}
+      <button type="button" data-plan="${esc(c.token)}">Copy orders</button></div>
+  </div>`;
 }
 function render() {
   const r = data;
@@ -815,6 +892,12 @@ document.querySelectorAll("#filters button").forEach(b => b.onclick = () => {
   render();
 });
 document.addEventListener("click", e => {
+  const pb = e.target.closest("button[data-plan]");
+  if (pb && data) {
+    const c = data.sources.flatMap(s => s.passed).find(x => x.token === pb.dataset.plan);
+    if (c) navigator.clipboard.writeText(planText(c)).then(() => { pb.textContent = "Copied"; setTimeout(() => pb.textContent = "Copy orders", 1500); });
+    return;
+  }
   const b = e.target.closest("button[data-copy]");
   if (!b) return;
   navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy address", 1500); });
@@ -1201,9 +1284,29 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
+const VERSION = "2026-10-06b";
+let seenScan = null;
+try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
+function toast(text, btn, onClick) {
+  $("#toasttext").textContent = text; $("#toastbtn").textContent = btn;
+  $("#toastbtn").onclick = () => { $("#toast").classList.remove("show"); onClick(); };
+  $("#toast").classList.add("show");
+}
+function nextRunText() {
+  // Scheduled at :07 and :37 UTC, a run takes 10 to 15 minutes; GitHub can start late.
+  const d = new Date(), m = d.getUTCMinutes(), add = m < 7 ? 7 - m : m < 37 ? 37 - m : 67 - m;
+  const at = new Date(d.getTime() + (add + 13) * 60000);
+  return at.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+async function checkVersion() {
+  try {
+    const v = (await (await fetch("version.txt?t=" + Date.now(), {cache: "no-store"})).text()).trim();
+    if (v && v !== VERSION) toast("A new version of the scanner is out.", "Reload", () => location.reload());
+  } catch (e) {}
+}
 async function loadAuto() {
   if (location.protocol === "file:") return;
-  const bust = "?t=" + Math.floor(Date.now() / 300000);
+  const bust = "?t=" + Math.floor(Date.now() / 120000);
   try {
     const repo = await getJSON("data/track.json" + bust);
     let merged = 0;
@@ -1216,14 +1319,27 @@ async function loadAuto() {
   try {
     const latest = await getJSON("data/latest.json" + bust);
     if (latest && latest.finished && (!data || !data.finished || Date.parse(latest.finished) > Date.parse(data.finished)) && !running) {
+      const before = new Set((data && data.sources ? data.sources : []).flatMap(s => s.passed.map(c => c.token)));
+      const now = latest.sources.flatMap(s => s.passed.map(c => c.token));
+      newTokens = new Set(now.filter(t => !before.has(t)));
+      const fresh = seenScan && seenScan !== latest.finished;
       data = latest; render();
-      $("#lastinfo").textContent = `Automatic scan (GitHub): ${latest.hours}h window, finished ${ago(latest.finished)}. Next one within the hour.`;
-      try { localStorage.setItem("flipLastScan", JSON.stringify(latest)); } catch (e) {}
+      try { localStorage.setItem("flipLastScan", JSON.stringify(latest)); localStorage.setItem("flipSeenScan", latest.finished); } catch (e) {}
+      seenScan = latest.finished;
+      if (fresh) {
+        document.title = `(${newTokens.size || now.length}) Flip Scanner`;
+        toast(`New scan just arrived: ${now.length} passed${newTokens.size ? `, ${newTokens.size} new` : ""}.`, "Show", () => {
+          document.querySelector('.views button[data-view="scan"]').click(); window.scrollTo({top: 0, behavior: "smooth"}); document.title = "Flip Scanner";
+        });
+      }
     }
+    if (latest && latest.finished) $("#lastinfo").textContent = `Automatic scan (GitHub): ${latest.hours}h window, finished ${ago(latest.finished)}. Next one expected around ${nextRunText()}.`;
   } catch (e) { /* no automatic scan yet */ }
 }
 loadAuto().then(refreshPrices);
-setInterval(() => loadAuto().then(refreshPrices), 5 * 60 * 1000);
+setInterval(() => loadAuto().then(refreshPrices), 2 * 60 * 1000);
+checkVersion(); setInterval(checkVersion, 10 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { document.title = "Flip Scanner"; loadAuto().then(refreshPrices); } });
 </script>
 </body>
 </html>

@@ -467,7 +467,8 @@ async function solanaSafety(token, pairAddr, F, W, N) {
   const t10 = sum(top);
   if (t10 > 30) F.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`); else N.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`);
   const grp = sameSizeGroup(holders.slice(0, 20).map(h => h.pct));
-  if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
+  if (grp.length >= 10) F.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}%: one buyer split into many wallets`);
+  else if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
   let biggest = 0, bigNet = 0;
   for (const n of r.insiderNetworks || []) {
     const held = n.currentHolding ?? n.tokenAmount;
@@ -475,7 +476,9 @@ async function solanaSafety(token, pairAddr, F, W, N) {
     bigNet = Math.max(bigNet, n.activeAccounts || n.size || 0);
   }
   // RugCheck's linked-wallet numbers are rough and can exceed 100%. Fail only on big, plausible numbers.
-  if (biggest > 100) W.push(`Linked wallet network of ${bigNet} wallets, RugCheck numbers unclear: check the bubble map`);
+  // HNUT (Oct 6 2026): 148 linked wallets ran the whole coin. A network this big is a bundled launch, whatever the % says.
+  if (bigNet >= 100) F.push(`Linked wallet network of ${bigNet} wallets: a bundled launch`);
+  else if (biggest > 100) W.push(`Linked wallet network of ${bigNet} wallets, RugCheck numbers unclear: check the bubble map`);
   else if (biggest > 20) F.push(`Linked wallet group holds ${biggest.toFixed(1)}% (RugCheck estimate)`);
   else if (biggest > 10) W.push(`Linked wallet group may hold ${biggest.toFixed(1)}% (RugCheck estimate, check the bubble map)`);
   else if (bigNet >= 50) W.push(`Linked wallet network of ${bigNet} wallets (often a bundled launch)`);
@@ -512,7 +515,8 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   if (t10 > 30) F.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`); else N.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`);
   if (contracts.length) W.push("Unlabeled contracts in top 10 (could be staking or a lock, or a whale): " + contracts.join(", "));
   const grp = sameSizeGroup((r.holders || []).slice(0, 20).map(h => num(h.percent) * 100));
-  if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
+  if (grp.length >= 10) F.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}%: one buyer split into many wallets`);
+  else if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
   const cp = num(r.creator_percent) * 100;
   if (cp > 5) F.push(`Creator still holds ${cp.toFixed(1)}%`);
   // GoPlus cannot see Uniswap V4 pools well. Coins launched with Pons keep their pool money in the Pons locker.
@@ -643,7 +647,10 @@ async function runScan(hours, chains, say, progress, onSource) {
         if (p) {
           const c = await check(p);
           c.tpb = k.tpb; c.buyers24 = k.buyers24;
-          if (k.tpb && k.tpb > 3.5) c.warns.push(`${k.tpb.toFixed(1)} buys per buyer in 24h: looks like bot churn`);
+          // Bots trade the same coin over and over from a few wallets. HNUT: 97 buys per buyer, 158 buyers for a $4.7M coin.
+          if (k.tpb && k.tpb > 10) { c.fails.push(`${k.tpb.toFixed(0)} buys per buyer in 24h: run by bots`); c.verdict = "FAIL"; }
+          else if (k.tpb && k.tpb > 3.5) c.warns.push(`${k.tpb.toFixed(1)} buys per buyer in 24h: looks like bot churn`);
+          if (k.buyers24 && k.buyers24 < 300 && c.mc > 1e6) { c.fails.push(`Only ${k.buyers24} real buyers in 24h for a ${money(c.mc)} coin`); c.verdict = "FAIL"; }
           if (c.verdict === "PASS" && c.warns.length) c.verdict = "PASS WITH WARNINGS";
           cards.push(c);
         }

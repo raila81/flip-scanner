@@ -269,7 +269,9 @@ def solana_safety(token, pair_addr, F, W, N):
     t10 = sum(top)
     (F if t10 > 30 else N["notes"]).append(f"Top 10 wallets (not pools) hold {t10:.1f}%")
     grp = same_size_group([h["pct"] for h in holders[:20]])
-    if grp and sum(grp) >= 5:
+    if len(grp) >= 10:
+        F.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}%: one buyer split into many wallets")
+    elif grp and sum(grp) >= 5:
         W.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}% (maybe one buyer)")
     biggest, big_net = 0, 0
     for n in r.get("insiderNetworks") or []:
@@ -277,7 +279,10 @@ def solana_safety(token, pair_addr, F, W, N):
         if supply and held:
             biggest = max(biggest, held / supply * 100)
         big_net = max(big_net, n.get("activeAccounts") or n.get("size") or 0)
-    if biggest > 100:
+    # HNUT (Oct 6 2026): 148 linked wallets ran the whole coin. A network this big is a bundled launch, whatever the % says.
+    if big_net >= 100:
+        F.append(f"Linked wallet network of {big_net} wallets: a bundled launch")
+    elif biggest > 100:
         W.append(f"Linked wallet network of {big_net} wallets, RugCheck numbers unclear: check the bubble map")
     elif biggest > 20:
         F.append(f"Linked wallet group holds {biggest:.1f}% (RugCheck estimate)")
@@ -331,7 +336,9 @@ def robinhood_safety(token, pair_addr, F, W, N):
     if contracts:
         W.append("Unlabeled contracts in top 10 (could be staking or a lock, or a whale): " + ", ".join(contracts))
     grp = same_size_group([num(h.get("percent")) * 100 for h in (r.get("holders") or [])[:20]])
-    if grp and sum(grp) >= 5:
+    if len(grp) >= 10:
+        F.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}%: one buyer split into many wallets")
+    elif grp and sum(grp) >= 5:
         W.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}% (maybe one buyer)")
     cp = num(r.get("creator_percent")) * 100
     if cp > 5:
@@ -512,8 +519,15 @@ def run_scan(hours, chains):
                 if p:
                     c = check(p)
                     c["tpb"], c["buyers24"] = k["tpb"], k["buyers24"]
-                    if k["tpb"] and k["tpb"] > 3.5:
+                    # Bots trade the same coin over and over from a few wallets. HNUT: 97 buys per buyer.
+                    if k["tpb"] and k["tpb"] > 10:
+                        c["fails"].append(f"{k['tpb']:.0f} buys per buyer in 24h: run by bots")
+                        c["verdict"] = "FAIL"
+                    elif k["tpb"] and k["tpb"] > 3.5:
                         c["warns"].append(f"{k['tpb']:.1f} buys per buyer in 24h: looks like bot churn")
+                    if k["buyers24"] and k["buyers24"] < 300 and c["mc"] > 1e6:
+                        c["fails"].append(f"Only {k['buyers24']} real buyers in 24h for a {money(c['mc'])} coin")
+                        c["verdict"] = "FAIL"
                     if c["verdict"] == "PASS" and c["warns"]:
                         c["verdict"] = "PASS WITH WARNINGS"
                     cards.append(c)

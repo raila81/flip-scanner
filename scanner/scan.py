@@ -554,6 +554,20 @@ def run_scan(hours, chains):
 
 
 # ---------- paper portfolio ----------
+# Two strategies run side by side on every passed coin (Rainer, Oct 6 2026):
+#   "now": buy at the scan price.
+#   "dip": wait up to 12h for the price to dip to support (2h VWAP, the average price paid, weighted by size)
+#          and bounce (a green 15-minute candle that closes back above it). Stop just under the dip low.
+# Exit plan v2 for both: stop until 2x; at 2x sell half and move the stop to entry; at 3x sell 40%;
+# the last 10% (moonbag) rides a trailing stop 40% under its peak; time stop after 14 days.
+VWAP_HOURS, WATCH_HOURS, BREAK_PCT, MAX_RISK = 2, 12, 0.15, 0.35
+NOW_STOP, TRAIL, TIME_STOP_D = 0.70, 0.40, 14
+
+
+def ts_of(iso):
+    return datetime.fromisoformat(iso).timestamp()
+
+
 def log_passed(track, res):
     added = 0
     now = datetime.now(timezone.utc)
@@ -562,10 +576,10 @@ def log_passed(track, res):
             if c["token"] in track or not c["price"]:
                 continue
             b = c.get("big") or {}
-            track[c["token"]] = dict(
+            base = dict(
                 token=c["token"], pair=c["pair"], chain=c["chain"], source=s["key"], symbol=c["symbol"], name=c["name"],
                 label=c.get("label") or "", warns=len(c["warns"]), logged=res["finished"], size=PAPER.get(s["key"], 250),
-                price0=c["price"], liq0=c["liq"], mc0=c["mc"], chart=c["chart"],
+                price0=c["price"], liq0=c["liq"], mc0=c["mc"], chart=c["chart"], plan="v2",
                 features=dict(
                     age_h=c["age_h"], holders=c["holders"], buys24=c["buys24"], sells24=c["sells24"], vol24=c["vol24"],
                     buyers24=c.get("buyers24"), tradesPerBuyer=round(c["tpb"], 1) if c.get("tpb") else None,
@@ -575,17 +589,93 @@ def log_passed(track, res):
                     bigBuys=b.get("buys", 0), bigBuyUsd=round(b.get("buyUsd", 0)), bigSells=b.get("sells", 0),
                     bigSellUsd=round(b.get("sellUsd", 0)), bigWallets=b.get("wallets", 0), bigBuyers=b.get("buyers", []),
                     whale=is_whale(c), hourUtc=now.hour, weekday=now.weekday(), window=res["hours"], auto=True),
-                now=None, liq=None, best=None, bestT=None, t2=None, exit=None, outcome="Open", final=False, checked=None)
+                now=None, liq=None, best=None, t2=None, exit=None, final=False, checked=None, cash=0.0, pos=1.0)
+            track[c["token"]] = dict(base, strategy="now", entry=c["price"], entryT=ts_of(res["finished"]),
+                                     stop0=c["price"] * NOW_STOP, outcome="Open")
+            track["dip:" + c["token"]] = dict(base, strategy="dip", entry=None, entryT=None, stop0=None, zone=None,
+                                              outcome="Waiting for dip", why=None)
             added += 1
     return added
 
 
-def replay(candles, price0):
-    stop, x2, x3 = price0 * STOP, price0 * 2, price0 * 3
-    best, best_t, hit2, hit3, stopped, done, t2, t3, t_stop = 0, None, False, False, False, False, None, None, None
+def vwap_before(candles, t0):
+    pre = [c for c in candles if t0 - VWAP_HOURS * 3600 <= c[0] < t0]
+    vol = sum(c[5] for c in pre)
+    if vol > 0:
+        return sum((c[2] + c[3] + c[4]) / 3 * c[5] for c in pre) / vol
+    return sum(c[4] for c in pre) / len(pre) if pre else None
+
+
+def watch_dip(e, candles):
+    """Look for the dip to support and the bounce. Sets entry, or Skipped / Missed."""
+    t0 = ts_of(e["logged"])
+    if e.get("zone") is None:
+        e["zone"] = vwap_before(candles, t0)
+    zone = e["zone"]
+    if not zone:
+        e.update(outcome="Skipped", why="no price history before the scan", final=True)
+        return
+    touched, low = False, None
+    for t, o, h, l, c, v in sorted(x for x in candles if t0 <= x[0] < t0 + WATCH_HOURS * 3600):
+        if not touched and l <= zone:
+            touched, low = True, l
+        if not touched:
+            continue
+        low = min(low, l)
+        if c < zone * (1 - BREAK_PCT):
+            e.update(outcome="Skipped", why=f"broke below support {money(zone)}", final=True)
+            return
+        if c > zone and c > o:
+            stop = low * 0.98
+            risk = (c - stop) / c
+            if risk > MAX_RISK:
+                e.update(outcome="Skipped", why=f"stop would be {risk:.0%} below entry, too risky", final=True)
+                return
+            e.update(entry=c, entryT=t + 900, stop0=stop, outcome="Open", why=f"bounced off {money(zone)}")
+            return
+    if time.time() > t0 + WATCH_HOURS * 3600:
+        e.update(outcome="Missed", why="dipped but never bounced" if touched else f"never dipped to {money(zone)}", final=True)
+    else:
+        last = max((x for x in candles if x[0] < t0 + WATCH_HOURS * 3600), default=None)
+        above = (last[4] / zone - 1) * 100 if last else 0
+        e["why"] = f"waiting for a dip to {money(zone)}" + (f" (price is {above:.0f}% above support)" if above > 30 else "")
+
+
+def simulate(e, candles):
+    """Replay exit plan v2 from the entry. Conservative: inside one candle the stop counts before a target."""
+    entry, stop, t_in = e["entry"], e["stop0"], e["entryT"]
+    cash, pos, hit2, hit3, peak, best = 0.0, 1.0, False, False, entry, 1.0
+    status, exit_t, t2, t3 = "Open", None, None, None
+    for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in):
+        best = max(best, h / entry)
+        if not hit2:
+            if l <= stop:
+                cash, pos, status, exit_t = cash + pos * stop / entry, 0.0, "Stop hit", t
+                break
+            if h >= 2 * entry:
+                cash, pos, hit2, t2, status = cash + 1.0, 0.5, True, t, "2x hit, rest running"
+        if hit2 and not hit3:
+            if h >= 3 * entry:
+                cash, pos, hit3, t3, peak, status = cash + 1.2, 0.1, True, t, h, "3x hit, moonbag running"
+            elif t != t2 and l <= entry:
+                cash, pos, status, exit_t = cash + pos, 0.0, "2x, rest out at entry", t
+                break
+        if hit3 and t != t3:
+            peak = max(peak, h)
+            if l <= peak * (1 - TRAIL):
+                cash, pos, status, exit_t = cash + pos * peak * (1 - TRAIL) / entry, 0.0, "Moonbag trailed out", t
+                break
+        if t - t_in > TIME_STOP_D * 86400:
+            cash, pos, status, exit_t = cash + pos * c / entry, 0.0, "Time stop", t
+            break
+    e.update(cash=cash, pos=pos, best=best, t2=t2, exit=exit_t, outcome=status, final=pos == 0)
+
+
+def old_replay(candles, price0):
+    stop, x2, x3 = price0 * 0.67, price0 * 2, price0 * 3
+    best, hit2, hit3, stopped, done, t2, t3, t_stop = 0, False, False, False, False, None, None, None
     for t, _o, high, low, _c, _v in candles:
-        if high / price0 > best:
-            best, best_t = high / price0, t
+        best = max(best, high / price0)
         if done:
             continue
         if not hit2:
@@ -596,48 +686,62 @@ def replay(candles, price0):
                 hit2, t2 = True, t
         if hit2 and high >= x3:
             hit3, t3, done = True, t, True
-    return dict(best=best, bestT=best_t, hit2=hit2, hit3=hit3, stopped=stopped, t2=t2, t3=t3, tStop=t_stop)
+    return dict(best=best, hit2=hit2, hit3=hit3, stopped=stopped, t2=t2, t3=t3, tStop=t_stop)
 
 
 def check_results(track):
-    # An exit before the buy means an old replay counted the candle before the scan: check those again.
-    for e in track.values():
-        if e.get("exit") and e["exit"] < datetime.fromisoformat(e["logged"]).timestamp():
+    for e in track.values():  # an exit before the buy came from an old replay bug: check again
+        if e.get("plan") != "v2" and e.get("exit") and e["exit"] < ts_of(e["logged"]):
             e.update(final=False, exit=None, outcome="Open", best=None, t2=None)
-    todo = [e for e in track.values() if not e.get("final")
-            and datetime.fromisoformat(e["logged"]).timestamp() < time.time() - 3600]
+    todo = [e for e in track.values() if not e.get("final") and ts_of(e["logged"]) < time.time() - 3600]
+    cache = {}
     for i, e in enumerate(todo, 1):
-        say(f"Checking {i} of {len(todo)} ({e['symbol']})")
-        try:
-            p = find_pair(e["token"], e["chain"])
-            if p:
-                e["now"], e["liq"] = num(p.get("priceUsd")), (p.get("liquidity") or {}).get("usd") or 0
-            else:
-                e["now"], e["liq"] = 0, 0
-        except Exception:
-            pass
-        logged = datetime.fromisoformat(e["logged"]).timestamp()
-        age_days = (time.time() - logged) / 86400
-        net = "solana" if e["chain"] == "solana" else "robinhood"
-        tf = "minute?aggregate=15&limit=1000" if age_days <= 10 else "hour?limit=1000"
-        try:
-            d = get_slow(f"{GT}/{net}/pools/{e['pair']}/ohlcv/{tf}")
-            candles = ((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
-            after = sorted([c for c in candles if c[0] >= logged])  # only candles that start after the scan
-            if after:
-                r = replay(after, e["price0"])
-                e["best"], e["bestT"], e["t2"] = r["best"], r["bestT"], r["t2"]
-                e["outcome"] = "3x hit" if r["hit3"] else "2x hit" if r["hit2"] else "Stop hit" if r["stopped"] else "Open"
-                e["exit"] = r["t3"] if r["hit3"] else r["tStop"] if r["stopped"] else None
-        except Exception:
-            say(f"{e['symbol']}: no candles yet")
-        if e["outcome"] == "Open" and ((e["liq"] is not None and e["liq"] < 1000) or (e["now"] and e["price0"] and e["now"] / e["price0"] < 0.1)):
-            e["outcome"], e["exit"] = "Dead", int(time.time())
-        if e["outcome"] in ("3x hit", "Stop hit", "Dead") or age_days > 14:
-            e["final"] = True
-            e["exit"] = e["exit"] or int(time.time())
+        say(f"Checking {i} of {len(todo)} ({e['symbol']}, {e.get('strategy', 'now')})")
+        key = (e["chain"], e["token"])
+        if key not in cache:
+            try:
+                p = find_pair(e["token"], e["chain"])
+                price = (num(p.get("priceUsd")), (p.get("liquidity") or {}).get("usd") or 0) if p else (0, 0)
+            except Exception:
+                price = (e.get("now"), e.get("liq"))
+            logged = ts_of(e["logged"])
+            tf = "minute?aggregate=15&limit=1000" if (time.time() - logged) / 86400 <= 10 else "hour?limit=1000"
+            net = "solana" if e["chain"] == "solana" else "robinhood"
+            try:
+                d = get_slow(f"{GT}/{net}/pools/{e['pair']}/ohlcv/{tf}")
+                candles = ((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+            except Exception:
+                candles = None
+            cache[key] = (price, candles)
+            time.sleep(PAUSE)
+        (now_p, liq), candles = cache[key]
+        e["now"], e["liq"] = now_p, liq
+        age_days = (time.time() - ts_of(e["logged"])) / 86400
+        if e.get("plan") == "v2":
+            if candles:
+                if e["strategy"] == "dip" and not e.get("entry"):
+                    watch_dip(e, candles)
+                if e.get("entry"):
+                    simulate(e, candles)
+            if e.get("entry") and not e["final"] and ((liq is not None and liq < 1000) or (now_p and now_p / e["entry"] < 0.1)):
+                e.update(cash=e["cash"] + e["pos"] * (now_p or 0) / e["entry"], pos=0.0, outcome="Dead", exit=int(time.time()), final=True)
+            if age_days > 21 and not e["final"]:
+                if e.get("entry"):
+                    e.update(cash=e["cash"] + e["pos"] * (now_p or 0) / e["entry"], pos=0.0, outcome="Time stop")
+                e.update(final=True, exit=e.get("exit") or int(time.time()))
+        else:  # old trades keep the old plan: half at 2x, rest at 3x, stop -33%
+            if candles:
+                after = sorted(c for c in candles if c[0] >= ts_of(e["logged"]))
+                if after:
+                    r = old_replay(after, e["price0"])
+                    e["best"], e["t2"] = r["best"], r["t2"]
+                    e["outcome"] = "3x hit" if r["hit3"] else "2x hit" if r["hit2"] else "Stop hit" if r["stopped"] else "Open"
+                    e["exit"] = r["t3"] if r["hit3"] else r["tStop"] if r["stopped"] else None
+            if e["outcome"] == "Open" and ((liq is not None and liq < 1000) or (now_p and e["price0"] and now_p / e["price0"] < 0.1)):
+                e["outcome"], e["exit"] = "Dead", int(time.time())
+            if e["outcome"] in ("3x hit", "Stop hit", "Dead") or age_days > 14:
+                e["final"], e["exit"] = True, e.get("exit") or int(time.time())
         e["checked"] = datetime.now(timezone.utc).isoformat()
-        time.sleep(PAUSE)
     return len(todo)
 
 

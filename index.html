@@ -251,10 +251,10 @@ table.track{min-width:980px}
     </div>
     <h2>Which rule works?</h2>
     <div class="twrap"><table class="baskets" id="baskets"></table></div>
-    <p class="tsub">Pretend you put $250 into every coin the moment it passed a scan ($100 for Movers, their pools are tiny), then sold on the plan: half at 2x, the rest at 3x, everything at -33%. Costs of 3% per round trip are taken off. Each row is a different rule for which coins to buy.</p>
+    <p class="tsub">Every coin that passes gets two paper trades of $250 ($100 for Movers). <b>Buy now</b> buys at the scan price with a stop 30% below. <b>Dip + bounce</b> waits up to 12 hours for the price to dip to support (the 2-hour average price paid) and bounce back above it, with the stop just under the dip. Both sell the same way: half at 2x (stop moves to entry), 40% at 3x, the last 10% rides a trailing stop 40% under its peak. Costs of 3% are taken off. The first rows compare the two strategies. The other rows slice the buy-now trades by rule.</p>
     <h2>Every trade</h2>
     <div class="twrap"><table class="track" id="tracktable"></table></div>
-    <p class="tsub">"Check results" replays the price since each scan with 15-minute candles. If 2x and the stop land in the same candle, the stop counts first. The record lives in this browser only. Use Export to move it to another device, and export now and then as a backup.</p>
+    <p class="tsub">The hourly GitHub scan replays 15-minute candles to see what each trade did. If a target and the stop land in the same candle, the stop counts first. "Check results" does the same right now from this browser. Trades from before Oct 6 keep the old plan.</p>
   </div>
 
   <footer>Safety scan only. A pass means no traps were found, not that the price will go up. Paper money, not advice.</footer>
@@ -822,22 +822,31 @@ document.addEventListener("click", e => {
 window.addEventListener("beforeunload", e => { if (running) { e.preventDefault(); e.returnValue = ""; } });
 
 // ---------- track record and paper portfolio ----------
-// One entry per coin: a $250 paper buy at the first scan it passed, then what happened since.
+// Two strategies side by side on every passed coin (Oct 6 2026), same rules as scanner/scan.py:
+//   "now": buy at the scan price, stop 30% below.
+//   "dip": wait up to 12h for a dip to support (2h VWAP: the average price paid, weighted by size) and a bounce
+//          (a green 15-minute candle that closes back above it). Stop just under the dip low. Skip if that is over 35% away.
+// Exit plan v2 for both: at 2x sell half and move the stop to entry; at 3x sell 40%; the last 10% (moonbag)
+// rides a trailing stop 40% under its peak; time stop after 14 days. Trades from before keep the old plan (v1).
 const STOP = 0.67, PAPER = 250, COST = 0.03;
+const VWAP_HOURS = 2, WATCH_HOURS = 12, BREAK_PCT = 0.15, MAX_RISK = 0.35, NOW_STOP = 0.70, TRAIL = 0.40, TIME_STOP_D = 14;
 let track = {};
 try { track = JSON.parse(localStorage.getItem("flipTrack") || "{}"); } catch (e) { track = {}; }
 function saveTrack() { try { localStorage.setItem("flipTrack", JSON.stringify(track)); } catch (e) {} updateTrackCount(); }
-function updateTrackCount() { const n = Object.keys(track).length; $("#trackcount").textContent = n ? `(${n})` : ""; }
+const isV2 = e => e.plan === "v2";
+const entered = e => !isV2(e) || !!e.entry;
+function updateTrackCount() { const n = Object.values(track).filter(entered).length; $("#trackcount").textContent = n ? `(${n})` : ""; }
 
 function logPassed(res) {
   let added = 0;
+  const logged = res.finished || new Date().toISOString();
   for (const s of res.sources) for (const c of s.passed) {
     if (track[c.token] || !c.price) continue;
     const b = c.big || {};
-    track[c.token] = {
+    const base = {
       token: c.token, pair: c.pair, chain: c.chain, source: s.key, symbol: c.symbol, name: c.name,
-      label: c.label || "", warns: c.warns.length, logged: res.finished || new Date().toISOString(), size: PAPER_BY[s.key] || PAPER,
-      price0: c.price, liq0: c.liq, mc0: c.mc, chart: c.chart,
+      label: c.label || "", warns: c.warns.length, logged, size: PAPER_BY[s.key] || PAPER,
+      price0: c.price, liq0: c.liq, mc0: c.mc, chart: c.chart, plan: "v2",
       // Snapshot at scan time. This is what later learning runs on: which numbers went with 2x, which with the stop.
       features: {
         age_h: c.age_h, holders: c.holders, buys24: c.buys24, sells24: c.sells24, vol24: c.vol24, buyers24: c.buyers24 || null,
@@ -848,19 +857,76 @@ function logPassed(res) {
         bigWallets: b.wallets || 0, bigBuyers: b.buyers || [], whale: !!isWhale(c),
         hourUtc: new Date().getUTCHours(), weekday: new Date().getUTCDay(), window: res.hours,
       },
-      now: null, liq: null, best: null, bestT: null, t2: null, exit: null, outcome: "Open", final: false, checked: null,
+      now: null, liq: null, best: null, t2: null, exit: null, final: false, checked: null, cash: 0, pos: 1,
     };
+    track[c.token] = {...base, strategy: "now", entry: c.price, entryT: Date.parse(logged) / 1000, stop0: c.price * NOW_STOP, outcome: "Open"};
+    track["dip:" + c.token] = {...base, strategy: "dip", entry: null, entryT: null, stop0: null, zone: null, outcome: "Waiting for dip", why: null};
     added++;
   }
   if (added) saveTrack();
   return added;
 }
-// Replay candles since the scan. Conservative: if 2x and the stop land in the same candle, the stop counts first.
+
+function vwapBefore(candles, t0) {
+  const pre = candles.filter(c => c[0] >= t0 - VWAP_HOURS * 3600 && c[0] < t0);
+  const vol = sum(pre.map(c => c[5]));
+  if (vol > 0) return sum(pre.map(c => (c[2] + c[3] + c[4]) / 3 * c[5])) / vol;
+  return pre.length ? sum(pre.map(c => c[4])) / pre.length : null;
+}
+function watchDip(e, candles) {
+  const t0 = Date.parse(e.logged) / 1000;
+  if (e.zone === null || e.zone === undefined) e.zone = vwapBefore(candles, t0);
+  const zone = e.zone;
+  if (!zone) { Object.assign(e, {outcome: "Skipped", why: "no price history before the scan", final: true}); return; }
+  let touched = false, low = null;
+  const win = candles.filter(c => c[0] >= t0 && c[0] < t0 + WATCH_HOURS * 3600).sort((a, b) => a[0] - b[0]);
+  for (const [t, o, h, l, c] of win) {
+    if (!touched && l <= zone) { touched = true; low = l; }
+    if (!touched) continue;
+    low = Math.min(low, l);
+    if (c < zone * (1 - BREAK_PCT)) { Object.assign(e, {outcome: "Skipped", why: `broke below support ${money(zone)}`, final: true}); return; }
+    if (c > zone && c > o) {
+      const stop = low * 0.98, risk = (c - stop) / c;
+      if (risk > MAX_RISK) { Object.assign(e, {outcome: "Skipped", why: `stop would be ${Math.round(risk * 100)}% below entry, too risky`, final: true}); return; }
+      Object.assign(e, {entry: c, entryT: t + 900, stop0: stop, outcome: "Open", why: `bounced off ${money(zone)}`});
+      return;
+    }
+  }
+  if (Date.now() / 1000 > t0 + WATCH_HOURS * 3600) {
+    Object.assign(e, {outcome: "Missed", why: touched ? "dipped but never bounced" : `never dipped to ${money(zone)}`, final: true});
+  } else {
+    const last = win[win.length - 1], above = last ? (last[4] / zone - 1) * 100 : 0;
+    e.why = `waiting for a dip to ${money(zone)}` + (above > 30 ? ` (price is ${Math.round(above)}% above support)` : "");
+  }
+}
+// Replay exit plan v2 from the entry. Conservative: inside one candle the stop counts before a target.
+function simulate(e, candles) {
+  const entry = e.entry, stop = e.stop0, tIn = e.entryT;
+  let cash = 0, pos = 1, hit2 = false, hit3 = false, peak = entry, best = 1, status = "Open", exitT = null, t2 = null, t3 = null;
+  for (const [t, o, h, l, c] of candles.filter(x => x[0] >= tIn).sort((a, b) => a[0] - b[0])) {
+    best = Math.max(best, h / entry);
+    if (!hit2) {
+      if (l <= stop) { cash += pos * stop / entry; pos = 0; status = "Stop hit"; exitT = t; break; }
+      if (h >= 2 * entry) { cash += 1; pos = 0.5; hit2 = true; t2 = t; status = "2x hit, rest running"; }
+    }
+    if (hit2 && !hit3) {
+      if (h >= 3 * entry) { cash += 1.2; pos = 0.1; hit3 = true; t3 = t; peak = h; status = "3x hit, moonbag running"; }
+      else if (t !== t2 && l <= entry) { cash += pos; pos = 0; status = "2x, rest out at entry"; exitT = t; break; }
+    }
+    if (hit3 && t !== t3) {
+      peak = Math.max(peak, h);
+      if (l <= peak * (1 - TRAIL)) { cash += pos * peak * (1 - TRAIL) / entry; pos = 0; status = "Moonbag trailed out"; exitT = t; break; }
+    }
+    if (t - tIn > TIME_STOP_D * 86400) { cash += pos * c / entry; pos = 0; status = "Time stop"; exitT = t; break; }
+  }
+  Object.assign(e, {cash, pos, best, t2, exit: exitT, outcome: status, final: pos === 0});
+}
+// Old plan v1 (trades from before Oct 6): half at 2x, rest at 3x, stop -33%.
 function replay(candles, price0) {
   const stop = price0 * STOP, x2 = price0 * 2, x3 = price0 * 3;
-  let best = 0, bestT = null, hit2 = false, hit3 = false, stopped = false, done = false, t2 = null, t3 = null, tStop = null;
+  let best = 0, hit2 = false, hit3 = false, stopped = false, done = false, t2 = null, t3 = null, tStop = null;
   for (const [t, , high, low] of candles) {
-    if (high / price0 > best) { best = high / price0; bestT = t; } // the full move, even after the plan is out
+    best = Math.max(best, high / price0);
     if (done) continue;
     if (!hit2) {
       if (low <= stop) { stopped = true; tStop = t; done = true; continue; }
@@ -868,10 +934,11 @@ function replay(candles, price0) {
     }
     if (hit2 && high >= x3) { hit3 = true; t3 = t; done = true; }
   }
-  return {best, bestT, hit2, hit3, stopped, t2, t3, tStop};
+  return {best, hit2, hit3, stopped, t2, t3, tStop};
 }
 function planResult(e) {
   // What the plan would have made, as a multiple of the money put in.
+  if (isV2(e)) return e.entry ? e.cash + e.pos * ((e.now ?? e.entry) / e.entry) : 1;
   if (e.outcome === "Stop hit") return STOP;
   if (e.outcome === "3x hit") return 0.5 * 2 + 0.5 * 3;
   if (e.outcome === "2x hit") return 0.5 * 2 + 0.5 * (e.now && e.price0 ? Math.max(e.now / e.price0, 0) : 1);
@@ -879,10 +946,14 @@ function planResult(e) {
   return e.now && e.price0 ? e.now / e.price0 : 1;
 }
 const sizeOf = e => e.size || PAPER;
-const marked = e => !!e.checked || (e.now !== null && e.now !== undefined); // we know a price, so we can value it
+const entryOf = e => isV2(e) ? e.entry : e.price0;
+const marked = e => entered(e) && (!!e.checked || (e.now !== null && e.now !== undefined)); // we know a price, so we can value it
 const positionValue = e => marked(e) ? sizeOf(e) * planResult(e) * (1 - COST) : sizeOf(e);
 const tradePnl = e => positionValue(e) - sizeOf(e);
 const exitTime = e => e.exit ? e.exit * 1000 : null;
+const startTime = e => isV2(e) && e.entryT ? e.entryT * 1000 : Date.parse(e.logged);
+const isWin = e => /2x|3x|Moonbag/.test(e.outcome || "") || (isV2(e) && e.final && planResult(e) > 1);
+const isLoss = e => /Stop hit|Dead/.test(e.outcome || "");
 
 async function checkResults(quiet) {
   const entries = Object.values(track);
@@ -890,38 +961,60 @@ async function checkResults(quiet) {
   const btn = $("#checkbtn"); btn.disabled = true;
   const say = m => { $("#trackstatus").textContent = m; if (quiet) $("#statustext").textContent = "Updating the paper portfolio: " + m; };
   try {
-    // An exit before the buy means the old replay counted the candle before the scan: check those again.
-    for (const e of entries) if (e.exit && e.exit * 1000 < Date.parse(e.logged)) { e.final = false; e.exit = null; e.outcome = "Open"; e.best = null; e.t2 = null; }
+    // An exit before the buy came from an old replay bug: check those again.
+    for (const e of entries) if (!isV2(e) && e.exit && e.exit * 1000 < Date.parse(e.logged)) Object.assign(e, {final: false, exit: null, outcome: "Open", best: null, t2: null});
     // Coins logged less than an hour ago have no candles worth replaying yet.
     const todo = entries.filter(e => !e.final && (!quiet || Date.parse(e.logged) < Date.now() - 3600e3));
+    const cache = {};
     for (let i = 0; i < todo.length; i++) {
       const e = todo[i];
-      say(`Checking ${i + 1} of ${todo.length} (${e.symbol})`);
-      try {
-        const pairs = await getJSON(`https://api.dexscreener.com/token-pairs/v1/${e.chain}/${e.token}`);
-        const p = Array.isArray(pairs) && pairs.length ? pairs.reduce((a, b) => (((b.liquidity || {}).usd || 0) > ((a.liquidity || {}).usd || 0) ? b : a)) : null;
-        if (p) { e.now = num(p.priceUsd); e.liq = (p.liquidity || {}).usd || 0; } else { e.now = 0; e.liq = 0; }
-      } catch (err) { /* keep old numbers */ }
+      say(`Checking ${i + 1} of ${todo.length} (${e.symbol}${isV2(e) ? ", " + (e.strategy === "dip" ? "dip" : "buy now") : ""})`);
+      const key = e.chain + ":" + e.token;
+      if (!cache[key]) {
+        let price = [e.now, e.liq], candles = null;
+        try {
+          const p = await findPair(e.token, e.chain);
+          price = p ? [num(p.priceUsd), (p.liquidity || {}).usd || 0] : [0, 0];
+        } catch (err) { /* keep old numbers */ }
+        const ageDays = (Date.now() - Date.parse(e.logged)) / 864e5;
+        const tf = ageDays <= 10 ? "minute?aggregate=15&limit=1000" : "hour?limit=1000";
+        try {
+          const d = await getJSONSlow(`${GT}/${e.chain === "solana" ? "solana" : "robinhood"}/pools/${e.pair}/ohlcv/${tf}`, say);
+          candles = ((d.data || {}).attributes || {}).ohlcv_list || [];
+        } catch (err) { say(`${e.symbol}: no candles yet`); }
+        cache[key] = {price, candles};
+        await sleep(PAUSE);
+      }
+      const {price: [nowP, liq], candles} = cache[key];
+      e.now = nowP; e.liq = liq;
       const ageDays = (Date.now() - Date.parse(e.logged)) / 864e5;
-      const net = e.chain === "solana" ? "solana" : "robinhood";
-      const tf = ageDays <= 10 ? "minute?aggregate=15&limit=1000" : "hour?limit=1000";
-      try {
-        const d = await getJSONSlow(`${GT}/${net}/pools/${e.pair}/ohlcv/${tf}`, say);
-        const since = Date.parse(e.logged) / 1000;
-        const candles = ((d.data || {}).attributes || {}).ohlcv_list || [];
-        const after = candles.filter(c => c[0] >= since).sort((a, b) => a[0] - b[0]); // only candles that start after the scan
-        if (after.length) {
-          const r = replay(after, e.price0);
-          e.best = r.best; e.bestT = r.bestT; e.t2 = r.t2;
-          e.outcome = r.hit3 ? "3x hit" : r.hit2 ? "2x hit" : r.stopped ? "Stop hit" : "Open";
-          e.exit = r.hit3 ? r.t3 : r.stopped ? r.tStop : null;
+      if (isV2(e)) {
+        if (candles && candles.length) {
+          if (e.strategy === "dip" && !e.entry) watchDip(e, candles);
+          if (e.entry) simulate(e, candles);
         }
-      } catch (err) { say(`${e.symbol}: no candles yet`); }
-      if (e.outcome === "Open" && ((e.liq !== null && e.liq < 1000) || (e.now !== null && e.price0 && e.now / e.price0 < 0.1))) { e.outcome = "Dead"; e.exit = Math.floor(Date.now() / 1000); }
-      if (e.outcome === "3x hit" || e.outcome === "Stop hit" || e.outcome === "Dead" || ageDays > 14) { e.final = true; if (!e.exit) e.exit = Math.floor(Date.now() / 1000); }
+        if (e.entry && !e.final && ((liq !== null && liq < 1000) || (nowP && nowP / e.entry < 0.1))) {
+          Object.assign(e, {cash: e.cash + e.pos * (nowP || 0) / e.entry, pos: 0, outcome: "Dead", exit: Math.floor(Date.now() / 1000), final: true});
+        }
+        if (ageDays > 21 && !e.final) {
+          if (e.entry) Object.assign(e, {cash: e.cash + e.pos * (nowP || 0) / e.entry, pos: 0, outcome: "Time stop"});
+          Object.assign(e, {final: true, exit: e.exit || Math.floor(Date.now() / 1000)});
+        }
+      } else {
+        if (candles) {
+          const after = candles.filter(c => c[0] >= Date.parse(e.logged) / 1000).sort((a, b) => a[0] - b[0]);
+          if (after.length) {
+            const r = replay(after, e.price0);
+            e.best = r.best; e.t2 = r.t2;
+            e.outcome = r.hit3 ? "3x hit" : r.hit2 ? "2x hit" : r.stopped ? "Stop hit" : "Open";
+            e.exit = r.hit3 ? r.t3 : r.stopped ? r.tStop : null;
+          }
+        }
+        if (e.outcome === "Open" && ((liq !== null && liq < 1000) || (nowP !== null && e.price0 && nowP / e.price0 < 0.1))) { e.outcome = "Dead"; e.exit = Math.floor(Date.now() / 1000); }
+        if (/3x hit|Stop hit|Dead/.test(e.outcome) || ageDays > 14) { e.final = true; if (!e.exit) e.exit = Math.floor(Date.now() / 1000); }
+      }
       e.checked = new Date().toISOString();
       saveTrack(); renderTrack();
-      await sleep(PAUSE);
     }
     renderPaper();
     say(todo.length ? "Results updated." : "Nothing left to check: every coin has a final result.");
@@ -930,30 +1023,36 @@ async function checkResults(quiet) {
   } finally { btn.disabled = false; }
 }
 
+const nowOnly = e => e.strategy !== "dip"; // rule rows look at "buy now" trades so a coin is not counted twice
 const BASKETS = [
-  ["All passed coins", () => true],
-  ["No warnings only", e => e.warns === 0],
-  ["pump.fun only", e => e.source === "pumpfun"],
-  ["Robinhood only", e => e.source === "robinhood"],
-  ["Movers only ($100 bets)", e => e.source === "movers"],
-  ["Says utility only", e => /utility/.test(e.label || "")],
-  ["Whale buy seen", e => !!(e.features || {}).whale],
-  ["Big buys beat big sells", e => (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
-  ["Has X or Telegram", e => (e.features || {}).hasX || (e.features || {}).hasTg],
-  ["Not up over 150% in 6h", e => ((e.features || {}).chg6 || 0) < 150],
-  ["Under 3.5 buys per buyer", e => (e.features || {}).tradesPerBuyer !== null && (e.features || {}).tradesPerBuyer !== undefined && e.features.tradesPerBuyer <= 3.5],
-  ["Pool at least 10% of market cap", e => ((e.features || {}).liqToMc || 0) >= 10],
+  ["Strategy: buy now (new plan)", e => isV2(e) && e.strategy === "now"],
+  ["Strategy: dip to support, then bounce", e => e.strategy === "dip"],
+  ["Old plan (before Oct 6)", e => !isV2(e)],
+  ["No warnings only", e => nowOnly(e) && e.warns === 0],
+  ["pump.fun only", e => nowOnly(e) && e.source === "pumpfun"],
+  ["Robinhood only", e => nowOnly(e) && e.source === "robinhood"],
+  ["Movers only ($100 bets)", e => nowOnly(e) && e.source === "movers"],
+  ["Says utility only", e => nowOnly(e) && /utility/.test(e.label || "")],
+  ["Whale buy seen", e => nowOnly(e) && !!(e.features || {}).whale],
+  ["Big buys beat big sells", e => nowOnly(e) && (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
+  ["Has X or Telegram", e => nowOnly(e) && ((e.features || {}).hasX || (e.features || {}).hasTg)],
+  ["Not up over 150% in 6h", e => nowOnly(e) && ((e.features || {}).chg6 || 0) < 150],
+  ["Under 3.5 buys per buyer", e => nowOnly(e) && (e.features || {}).tradesPerBuyer != null && e.features.tradesPerBuyer <= 3.5],
+  ["Pool at least 10% of market cap", e => nowOnly(e) && ((e.features || {}).liqToMc || 0) >= 10],
 ];
-function portfolio(es) {
+function portfolio(all) {
+  const es = all.filter(entered);
   const invested = sum(es.map(sizeOf)), value = sum(es.map(positionValue));
   return {n: es.length, invested, value, pnl: value - invested, pct: invested ? (value / invested - 1) * 100 : 0,
-    closed: es.filter(e => e.final).length, open: es.filter(e => !e.final).length, unchecked: es.filter(e => !marked(e)).length};
+    closed: es.filter(e => e.final).length, open: es.filter(e => !e.final).length, unchecked: es.filter(e => !marked(e)).length,
+    waiting: all.filter(e => isV2(e) && e.strategy === "dip" && !e.entry && !e.final).length,
+    missed: all.filter(e => /Missed|Skipped/.test(e.outcome || "")).length};
 }
 
 // ---------- live prices for open positions (DexScreener, one call per 30 coins, no quota trouble) ----------
 let pricesAt = null;
 async function refreshPrices() {
-  const open = Object.values(track).filter(e => !e.final);
+  const open = Object.values(track).filter(e => !e.final && entered(e));
   if (!open.length) return;
   const byChain = {};
   for (const e of open) (byChain[e.chain] = byChain[e.chain] || []).push(e);
@@ -982,10 +1081,10 @@ const signed = x => (x >= 0 ? "+" : "-") + money(Math.abs(x));
 function renderPaper() {
   const es = Object.values(track);
   const t = $("#ticker");
-  if (!es.length) { t.hidden = true; return; }
   const p = portfolio(es);
+  if (!p.n && !p.waiting) { t.hidden = true; return; }
   t.hidden = false;
-  $("#tickertext").innerHTML = `Paper: <b>${money(p.value)}</b> <b class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</b> · ${p.n} trades`;
+  $("#tickertext").innerHTML = `Paper: <b>${money(p.value)}</b> <b class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</b> · ${p.n} trades${p.waiting ? ` · ${p.waiting} dips waiting` : ""}`;
 }
 function countUp(el, target, fmt) {
   const start = performance.now(), from = Number(el.dataset.v || 0);
@@ -997,9 +1096,9 @@ function drawCurve(es) {
   const svg = $("#curve");
   const pts = [];
   let run = 0;
-  const closed = es.filter(e => e.final && e.exit).sort((a, b) => a.exit - b.exit);
+  const closed = es.filter(e => entered(e) && e.final && e.exit).sort((a, b) => a.exit - b.exit);
   for (const e of closed) { run += tradePnl(e); pts.push(run); }
-  const openPnl = sum(es.filter(e => !e.final && e.checked).map(tradePnl));
+  const openPnl = sum(es.filter(e => entered(e) && !e.final && marked(e)).map(tradePnl));
   if (openPnl) pts.push(run + openPnl);
   if (pts.length < 2) pts.unshift(0);
   if (pts.length < 2) { svg.innerHTML = ""; return; }
@@ -1018,15 +1117,15 @@ function renderTrack() {
   const p = portfolio(es);
   countUp($("#heroValue"), p.value, v => money(v));
   $("#heroPl").innerHTML = es.length ? `<span class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</span> <span class="tsub">on ${money(p.invested)} put in</span>` : "Every coin that passes a scan becomes a paper trade. The hourly scan on GitHub fills this by itself.";
-  $("#heroSub").textContent = es.length ? `${p.n} trades: ${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} without a price yet` : ""}${pricesAt ? `. Live prices ${ago(pricesAt)}` : ""}` : "";
+  $("#heroSub").textContent = es.length ? `${p.n} trades: ${p.closed} closed, ${p.open} open${p.unchecked ? `, ${p.unchecked} without a price yet` : ""}. ${p.waiting} dips waiting, ${p.missed} missed or skipped${pricesAt ? `. Live prices ${ago(pricesAt)}` : ""}` : "";
   drawCurve(es);
-  const closed = es.filter(e => e.final && e.checked);
+  const closed = es.filter(e => entered(e) && e.final && e.checked);
   const wins = closed.filter(e => tradePnl(e) > 0), losses = closed.filter(e => tradePnl(e) <= 0);
   const avg = a => a.length ? sum(a.map(tradePnl)) / a.length : 0;
   const pf = losses.length && sum(losses.map(tradePnl)) ? sum(wins.map(tradePnl)) / Math.abs(sum(losses.map(tradePnl))) : (wins.length ? Infinity : 0);
   const best = closed.length ? closed.reduce((a, b) => tradePnl(b) > tradePnl(a) ? b : a) : null;
   const worst = closed.length ? closed.reduce((a, b) => tradePnl(b) < tradePnl(a) ? b : a) : null;
-  const holds = closed.filter(e => e.exit).map(e => exitTime(e) - Date.parse(e.logged));
+  const holds = closed.filter(e => e.exit).map(e => exitTime(e) - startTime(e));
   const tile = (v, l, cls = "") => `<div class="tile"><b class="${cls}">${v}</b><span>${l}</span></div>`;
   $("#ptiles").innerHTML =
     tile(closed.length ? Math.round(wins.length / closed.length * 100) + "%" : "-", "Win rate (closed)", wins.length > losses.length ? "o-win" : closed.length ? "o-loss" : "") +
@@ -1037,36 +1136,39 @@ function renderTrack() {
     tile(best ? `${esc(best.symbol)} ${signed(tradePnl(best))}` : "-", "Best trade", "o-win") +
     tile(worst ? `${esc(worst.symbol)} ${signed(tradePnl(worst))}` : "-", "Worst trade", "o-loss") +
     tile(holds.length ? dur(sum(holds) / holds.length) : "-", "Average hold");
-  $("#baskets").innerHTML = `<tr><th>Rule</th><th class="num">Trades</th><th class="num">Put in</th><th class="num">Worth now</th><th class="num">Return</th><th class="num">Hit 2x</th><th class="num">Stopped or dead</th></tr>` +
+  $("#baskets").innerHTML = `<tr><th>Rule</th><th class="num">Trades</th><th class="num">Put in</th><th class="num">Worth now</th><th class="num">Return</th><th class="num">Hit 2x</th><th class="num">Stopped or dead</th><th class="num">Missed or skipped</th></tr>` +
     BASKETS.map(([name, fn]) => {
-      const sub = es.filter(fn), q = portfolio(sub), ck = sub.filter(e => e.checked);
-      const w = ck.filter(e => e.outcome === "2x hit" || e.outcome === "3x hit").length;
-      const l = ck.filter(e => e.outcome === "Stop hit" || e.outcome === "Dead").length;
+      const all = es.filter(fn), q = portfolio(all), ck = all.filter(e => entered(e) && e.checked);
+      const w = ck.filter(isWin).length, l = ck.filter(isLoss).length;
       const pc = n => ck.length ? Math.round(n / ck.length * 100) + "%" : "-";
-      return `<tr><td>${name}</td><td class="num">${q.n}</td><td class="num">${money(q.invested)}</td><td class="num">${money(q.value)}</td>
-        <td class="num ${q.n ? (q.pnl >= 0 ? "o-win" : "o-loss") : ""}">${q.n ? pctTxt(q.pct) : "-"}</td><td class="num">${pc(w)}</td><td class="num">${pc(l)}</td></tr>`;
+      return `<tr><td>${name}</td><td class="num">${q.n}${q.waiting ? ` <span class="tsub">+${q.waiting} waiting</span>` : ""}</td><td class="num">${money(q.invested)}</td><td class="num">${money(q.value)}</td>
+        <td class="num ${q.n ? (q.pnl >= 0 ? "o-win" : "o-loss") : ""}">${q.n ? pctTxt(q.pct) : "-"}</td><td class="num">${pc(w)}</td><td class="num">${pc(l)}</td><td class="num">${q.missed || "-"}</td></tr>`;
     }).join("");
   if (!es.length) { $("#tracktable").innerHTML = `<tr><td class="empty">No trades yet. Run a scan: every coin that passes becomes a $250 paper trade.</td></tr>`; return; }
-  const cls = o => o === "2x hit" || o === "3x hit" ? "o-win" : o === "Stop hit" || o === "Dead" ? "o-loss" : "o-open";
+  const cls = e => isWin(e) ? "o-win" : isLoss(e) ? "o-loss" : "o-open";
   const x = v => v === null || v === undefined ? "-" : v.toFixed(2) + "x";
-  $("#tracktable").innerHTML = `<tr><th>Bought</th><th>Coin</th><th>Source</th><th>Label</th><th class="num">Warn</th><th class="num">Entry</th><th class="num">Size</th><th class="num">Now</th><th class="num">Best</th><th>Status</th><th>Exit</th><th class="num">Held</th><th class="num">P&amp;L</th><th class="num">Return</th><th></th></tr>` +
+  const strat = e => !isV2(e) ? "Old plan" : e.strategy === "dip" ? "Dip + bounce" : "Buy now";
+  $("#tracktable").innerHTML = `<tr><th>Scanned</th><th>Coin</th><th>Strategy</th><th>Source</th><th>Label</th><th class="num">Warn</th><th class="num">Entry</th><th class="num">Size</th><th class="num">Now</th><th class="num">Best</th><th>Status</th><th>Exit</th><th class="num">Held</th><th class="num">P&amp;L</th><th class="num">Return</th><th></th></tr>` +
     es.map(e => {
-      const pnl = marked(e) ? tradePnl(e) : null;
+      const ent = entryOf(e), pnl = marked(e) ? tradePnl(e) : null;
+      const entryCell = ent ? `${money(ent)}${isV2(e) && e.strategy === "dip" && e.entryT ? `<br><span class="tsub">${when(e.entryT * 1000)}</span>` : ""}` : `<span class="tsub">${e.zone ? "zone " + money(e.zone) : "-"}</span>`;
+      const nowCell = !ent || e.now === null || e.now === undefined ? "-" : `<span class="${e.now >= ent ? "up" : "down"}">${x(e.now / ent)}</span><br><span class="tsub">${money(e.now)}${e.chg1 ? ` · 1h ${e.chg1 >= 0 ? "+" : ""}${Number(e.chg1).toFixed(0)}%` : ""}</span>`;
       return `<tr>
       <td>${when(e.logged)}</td>
       <td><b>${esc(e.symbol)}</b> <span class="tsub">${esc(e.name)}</span></td>
+      <td>${strat(e)}</td>
       <td>${e.source === "pumpfun" ? "pump.fun" : e.source === "movers" ? "Mover" : "Robinhood"}</td>
       <td>${esc(e.label || "-")}</td>
       <td class="num">${e.warns}</td>
-      <td class="num">${money(e.price0)}</td>
-      <td class="num">$${sizeOf(e)}</td>
-      <td class="num">${e.now === null || e.now === undefined ? "-" : `<span class="${e.now >= e.price0 ? "up" : "down"}">${x(e.now / e.price0)}</span><br><span class="tsub">${money(e.now)}${e.chg1 ? ` · 1h ${e.chg1 >= 0 ? "+" : ""}${Number(e.chg1).toFixed(0)}%` : ""}</span>`}</td>
+      <td class="num">${entryCell}</td>
+      <td class="num">${ent ? "$" + sizeOf(e) : "-"}</td>
+      <td class="num">${nowCell}</td>
       <td class="num">${x(e.best)}</td>
-      <td class="${cls(e.outcome)}">${esc(e.outcome)}${e.final ? "" : e.checked ? " (so far)" : marked(e) ? " (live)" : ""}</td>
+      <td class="${cls(e)}" title="${esc(e.why || "")}">${esc(e.outcome)}${e.final || !ent ? "" : e.checked ? " (so far)" : marked(e) ? " (live)" : ""}${e.why ? `<br><span class="tsub">${esc(e.why)}</span>` : ""}</td>
       <td>${e.exit ? when(exitTime(e)) : e.t2 ? "half sold " + when(e.t2 * 1000) : "-"}</td>
-      <td class="num">${dur((e.exit ? exitTime(e) : Date.now()) - Date.parse(e.logged))}</td>
+      <td class="num">${ent ? dur((e.exit ? exitTime(e) : Date.now()) - startTime(e)) : "-"}</td>
       <td class="num ${pnl === null ? "" : pnl >= 0 ? "o-win" : "o-loss"}">${pnl === null ? "-" : signed(pnl)}</td>
-      <td class="num ${pnl === null ? "" : pnl >= 0 ? "o-win" : "o-loss"}">${pnl === null ? "-" : pctTxt(pnl / PAPER * 100)}</td>
+      <td class="num ${pnl === null ? "" : pnl >= 0 ? "o-win" : "o-loss"}">${pnl === null ? "-" : pctTxt(pnl / sizeOf(e) * 100)}</td>
       <td>${safeUrl(e.chart) ? `<a href="${esc(e.chart)}" target="_blank" rel="noopener noreferrer">chart</a>` : ""}</td>
     </tr>`; }).join("");
 }

@@ -170,7 +170,7 @@ def prefilter(pools, hours, L):
     for p, _ in recent:
         s = p["attributes"]["name"].split(" / ")[0].strip().lower()
         sym_count[s] = sym_count.get(s, 0) + 1
-    keep, dropped, seen = {}, {}, set()
+    keep, dropped, seen, rejected = {}, {}, set(), []
     for p, age_h in recent:
         a = p["attributes"]
         sym = a["name"].split(" / ")[0].strip()
@@ -206,12 +206,16 @@ def prefilter(pools, hours, L):
             reason = "celebrity or company name"
         if reason:
             dropped[reason] = dropped.get(reason, 0) + 1
+            price = num(a.get("base_token_price_usd"))
+            if reason not in ("outside time window", "money or stock token, not a new coin") and price:
+                rejected.append(dict(token=token, symbol=sym, name=sym, reason=reason, pair=a.get("address"), price=price,
+                                     liq=liq, mc=fdv, ageH=age_h))
             continue
         seen.add(token)
         tpb = buys24 / t24["buyers"] if t24.get("buyers") else None
         if token not in keep or keep[token]["liq"] < liq:
             keep[token] = dict(token=token, symbol=sym, liq=liq, vol24=vol24, ageH=age_h, tpb=tpb, buyers24=t24.get("buyers") or 0)
-    return list(keep.values()), sorted(dropped.items(), key=lambda x: -x[1])
+    return list(keep.values()), sorted(dropped.items(), key=lambda x: -x[1]), rejected
 
 
 # ---------- step 3: flip check ----------
@@ -269,7 +273,7 @@ def solana_safety(token, pair_addr, F, W, N):
     t10 = sum(top)
     (F if t10 > 30 else N["notes"]).append(f"Top 10 wallets (not pools) hold {t10:.1f}%")
     grp = same_size_group([h["pct"] for h in holders[:20]])
-    if len(grp) >= 10:
+    if len(grp) >= 10 and sum(grp) >= 8:  # many tiny equal wallets are normal; it matters when they hold real supply
         F.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}%: one buyer split into many wallets")
     elif grp and sum(grp) >= 5:
         W.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}% (maybe one buyer)")
@@ -336,7 +340,7 @@ def robinhood_safety(token, pair_addr, F, W, N):
     if contracts:
         W.append("Unlabeled contracts in top 10 (could be staking or a lock, or a whale): " + ", ".join(contracts))
     grp = same_size_group([num(h.get("percent")) * 100 for h in (r.get("holders") or [])[:20]])
-    if len(grp) >= 10:
+    if len(grp) >= 10 and sum(grp) >= 8:  # many tiny equal wallets are normal; it matters when they hold real supply
         F.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}%: one buyer split into many wallets")
     elif grp and sum(grp) >= 5:
         W.append(f"{len(grp)} same-size wallets hold {sum(grp):.1f}% (maybe one buyer)")
@@ -578,7 +582,7 @@ def run_scan(hours, chains):
     for key in chains:
         src = SOURCES[key]
         pools, read, planned = fetch_pools(src, hours)
-        keep, dropped = prefilter(pools, hours, src["limits"])
+        keep, dropped, rejected = prefilter(pools, hours, src["limits"])
         keep = sorted(keep, key=lambda k: k["ageH"])[:20]
         say(f"{src['label']}: {len(keep)} coins left after red-flag filters, running safety checks")
         cards = []
@@ -619,7 +623,10 @@ def run_scan(hours, chains):
                 c["verdict"] = "PASS WITH WARNINGS"
             time.sleep(PAUSE)
         cards.sort(key=lambda c: (order[c["verdict"]], c["age_h"]))
+        failed_safety = [dict(token=c["token"], symbol=c["symbol"], name=c["name"], reason="failed safety: " + c["fails"][0],
+                              pair=c["pair"], price=c["price"], liq=c["liq"], mc=c["mc"], ageH=c["age_h"]) for c in cards if c["verdict"] == "FAIL"]
         result["sources"].append(dict(key=key, label=src["label"], looked=len(pools), pagesRead=read, pagesPlanned=planned,
+                                      rejected=failed_safety + rejected,
                                       dropped=[list(x) for x in dropped], passed=[c for c in cards if is_pass(c)],
                                       unchecked=[c for c in cards if c["verdict"] == "NOT CHECKED"],
                                       failed=[c for c in cards if c["verdict"] == "FAIL"]))
@@ -676,6 +683,39 @@ def log_passed(track, res):
                                                   outcome="No order", why=o.get("why") or "no entry plan", final=True)
             added += 1
     return added
+
+
+CONTROL_PER_RUN, CONTROL_OPEN_MAX = 10, 150
+
+
+def log_control(track, res):
+    """Control group: follow some coins the filters rejected, as paper 'buy now' trades outside the portfolio.
+    If rejected coins do better than passed ones, a filter is wrong. Failed-safety coins first, then one per drop reason."""
+    open_ctl = sum(1 for e in track.values() if e.get("strategy") == "control" and not e.get("final"))
+    room = max(0, min(CONTROL_PER_RUN, CONTROL_OPEN_MAX - open_ctl))
+    picks, seen_reason = [], {}
+    pool = [(s, r) for s in res["sources"] for r in s.get("rejected", [])]
+    pool.sort(key=lambda x: (not x[1]["reason"].startswith("failed safety"), x[1]["ageH"]))
+    for s, r in pool:
+        if len(picks) >= room:
+            break
+        if r["token"] in track or "ctl:" + r["token"] in track or not r.get("pair"):
+            continue
+        group = r["reason"].split(":")[0]
+        if seen_reason.get(group, 0) >= 3:
+            continue
+        seen_reason[group] = seen_reason.get(group, 0) + 1
+        picks.append((s, r))
+    for s, r in picks:
+        chain = SOURCES[s["key"]]["dexChain"]
+        track["ctl:" + r["token"]] = dict(
+            token=r["token"], pair=r["pair"], chain=chain, source=s["key"], symbol=r["symbol"], name=r["name"],
+            label="", warns=0, logged=res["finished"], size=0, price0=r["price"], liq0=r["liq"], mc0=r["mc"],
+            chart=f"https://dexscreener.com/{chain}/{r['pair']}", plan="v2", strategy="control", reason=r["reason"],
+            features=dict(age_h=round(r["ageH"], 1), auto=True),
+            entry=r["price"], entryT=ts_of(res["finished"]), stop0=r["price"] * NOW_STOP, outcome="Open",
+            now=None, liq=None, best=None, t2=None, exit=None, final=False, checked=None, cash=0.0, pos=1.0, legs=None)
+    return len(picks)
 
 
 def watch_fill(e, candles):
@@ -790,13 +830,21 @@ def old_replay(candles, price0):
     return dict(best=best, hit2=hit2, hit3=hit3, stopped=stopped, t2=t2, t3=t3, tStop=t_stop)
 
 
+CHECK_BUDGET_S = 600
+
+
 def check_results(track):
     for e in track.values():  # an exit before the buy came from an old replay bug: check again
         if e.get("plan") != "v2" and e.get("exit") and e["exit"] < ts_of(e["logged"]):
             e.update(final=False, exit=None, outcome="Open", best=None, t2=None)
     todo = [e for e in track.values() if not e.get("final") and ts_of(e["logged"]) < time.time() - 3600]
-    cache = {}
+    # Oldest-checked first, inside a time budget, so a run never outgrows GitHub's limit as the record grows.
+    todo.sort(key=lambda e: (e.get("checked") or "", e["logged"]))
+    cache, started = {}, time.time()
     for i, e in enumerate(todo, 1):
+        if time.time() - started > CHECK_BUDGET_S:
+            say(f"Time budget used: {len(todo) - i + 1} trades wait for the next run")
+            break
         say(f"Checking {i} of {len(todo)} ({e['symbol']}, {e.get('strategy', 'now')})")
         key = (e["chain"], e["token"])
         if key not in cache:
@@ -862,8 +910,12 @@ def main():
     res = run_scan(args.hours, [c.strip() for c in args.chains.split(",") if c.strip() in SOURCES])
     added = log_passed(track, res)
     say(f"{added} new paper trades")
+    ctl = log_control(track, res)
+    say(f"{ctl} rejected coins added to the control group")
     checked = check_results(track)
     say(f"{checked} positions re-checked")
+    for s in res["sources"]:
+        s.pop("rejected", None)
     with open(os.path.join(args.out, "latest.json"), "w") as fh:
         json.dump(res, fh, separators=(",", ":"))
     with open(track_path, "w") as fh:

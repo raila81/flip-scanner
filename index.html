@@ -272,6 +272,9 @@ table.track{min-width:980px}
     <h2>What-if exits</h2>
     <div class="twrap"><table class="baskets" id="whatif"></table></div>
     <p class="tsub">The same trades (both strategies, since Oct 6) replayed with other ways to sell. It shows which exit plan would have made the most, before you change the real orders. Stops fill 10% worse than their price, like a fast crash. Open trades count at today's price. Under about 30 trades the numbers mean little.</p>
+    <h2>Control group: did the filters throw away winners?</h2>
+    <div class="twrap"><table class="baskets" id="control"></table></div>
+    <p class="tsub">Each GitHub run also follows up to 10 coins the filters rejected, as paper "buy now" trades with the card plan. They never count in your portfolio. If a reject reason keeps doing better than the passed coins, that filter is too strict. Under about 20 coins per row the numbers mean little.</p>
     <h2>Every trade</h2>
     <div class="twrap"><table class="track" id="tracktable"></table></div>
     <p class="tsub">The hourly GitHub scan replays 15-minute candles to see what each trade did. If a target and the stop land in the same candle, the stop counts first. "Check results" does the same right now from this browser. Trades from before Oct 6 keep the old plan.</p>
@@ -488,7 +491,7 @@ async function solanaSafety(token, pairAddr, F, W, N) {
   const t10 = sum(top);
   if (t10 > 30) F.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`); else N.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`);
   const grp = sameSizeGroup(holders.slice(0, 20).map(h => h.pct));
-  if (grp.length >= 10) F.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}%: one buyer split into many wallets`);
+  if (grp.length >= 10 && sum(grp) >= 8) F.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}%: one buyer split into many wallets`);
   else if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
   let biggest = 0, bigNet = 0;
   for (const n of r.insiderNetworks || []) {
@@ -536,7 +539,7 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   if (t10 > 30) F.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`); else N.push(`Top 10 wallets (not pools) hold ${t10.toFixed(1)}%`);
   if (contracts.length) W.push("Unlabeled contracts in top 10 (could be staking or a lock, or a whale): " + contracts.join(", "));
   const grp = sameSizeGroup((r.holders || []).slice(0, 20).map(h => num(h.percent) * 100));
-  if (grp.length >= 10) F.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}%: one buyer split into many wallets`);
+  if (grp.length >= 10 && sum(grp) >= 8) F.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}%: one buyer split into many wallets`);
   else if (grp.length && sum(grp) >= 5) W.push(`${grp.length} same-size wallets hold ${sum(grp).toFixed(1)}% (maybe one buyer)`);
   const cp = num(r.creator_percent) * 100;
   if (cp > 5) F.push(`Creator still holds ${cp.toFixed(1)}%`);
@@ -942,8 +945,10 @@ let track = {};
 try { track = JSON.parse(localStorage.getItem("flipTrack") || "{}"); } catch (e) { track = {}; }
 function saveTrack() { try { localStorage.setItem("flipTrack", JSON.stringify(track)); } catch (e) {} updateTrackCount(); }
 const isV2 = e => e.plan === "v2";
+const isCtl = e => e.strategy === "control"; // control group: rejected coins followed on paper, never part of the portfolio
+const mine = () => Object.values(track).filter(e => !isCtl(e));
 const entered = e => !isV2(e) || !!e.entry;
-function updateTrackCount() { const n = Object.values(track).filter(entered).length; $("#trackcount").textContent = n ? `(${n})` : ""; }
+function updateTrackCount() { const n = mine().filter(entered).length; $("#trackcount").textContent = n ? `(${n})` : ""; }
 
 function logPassed(res) {
   let added = 0;
@@ -1087,7 +1092,7 @@ async function checkResults(quiet) {
     // An exit before the buy came from an old replay bug: check those again.
     for (const e of entries) if (!isV2(e) && e.exit && e.exit * 1000 < Date.parse(e.logged)) Object.assign(e, {final: false, exit: null, outcome: "Open", best: null, t2: null});
     // Coins logged less than an hour ago have no candles worth replaying yet.
-    const todo = entries.filter(e => !e.final && (!quiet || Date.parse(e.logged) < Date.now() - 3600e3));
+    const todo = entries.filter(e => !isCtl(e) && !e.final && (!quiet || Date.parse(e.logged) < Date.now() - 3600e3));
     const cache = {};
     for (let i = 0; i < todo.length; i++) {
       const e = todo[i];
@@ -1178,7 +1183,7 @@ function portfolio(all) {
 // ---------- live prices for open positions (DexScreener, one call per 30 coins, no quota trouble) ----------
 let pricesAt = null;
 async function refreshPrices() {
-  const open = Object.values(track).filter(e => !e.final && entered(e));
+  const open = mine().filter(e => !e.final && entered(e));
   if (!open.length) return;
   const byChain = {};
   for (const e of open) (byChain[e.chain] = byChain[e.chain] || []).push(e);
@@ -1205,7 +1210,7 @@ async function refreshPrices() {
 }
 const signed = x => (x >= 0 ? "+" : "-") + money(Math.abs(x));
 function renderPaper() {
-  const es = Object.values(track);
+  const es = mine();
   const t = $("#ticker");
   const p = portfolio(es);
   if (!p.n && !p.waiting) { t.hidden = true; return; }
@@ -1237,8 +1242,29 @@ function drawCurve(es) {
     <path d="${d} L600 120 L0 120 Z" fill="url(#g)"/><path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>
     <circle cx="600" cy="${Y(last).toFixed(1)}" r="4" fill="${color}"/>`;
 }
+function renderControl(es) {
+  const ctl = Object.values(track).filter(isCtl);
+  const groups = {};
+  for (const e of ctl) { const g = (e.reason || "other").replace(/^failed safety: .*/, "failed safety").replace(/ \(.*\)$/, ""); (groups[g] = groups[g] || []).push(e); }
+  const row = (name, list, bold) => {
+    const ck = list.filter(e => e.checked && e.entry), net = ck.map(e => planResult(e) * (1 - COST) - 1);
+    const avg = net.length ? sum(net) / net.length * 100 : null;
+    const pc = n => ck.length ? Math.round(n / ck.length * 100) + "%" : "-";
+    const top = ck.length ? ck.reduce((a, b) => (b.best || 0) > (a.best || 0) ? b : a) : null;
+    return `<tr${bold ? ' style="font-weight:600"' : ""}><td>${esc(name)}</td><td class="num">${list.length}</td><td class="num">${ck.length}</td>
+      <td class="num ${avg === null ? "" : avg >= 0 ? "o-win" : "o-loss"}">${avg === null ? "-" : pctTxt(avg)}</td>
+      <td class="num">${pc(ck.filter(isWin).length)}</td><td class="num">${pc(ck.filter(isLoss).length)}</td>
+      <td class="num">${top && top.best ? `${esc(top.symbol)} ${top.best.toFixed(1)}x` : "-"}</td></tr>`;
+  };
+  const passed = es.filter(e => isV2(e) && e.strategy === "now");
+  $("#control").innerHTML = `<tr><th>Coins</th><th class="num">Followed</th><th class="num">Checked</th><th class="num">Average return</th><th class="num">Hit 2x</th><th class="num">Stopped or dead</th><th class="num">Biggest run</th></tr>` +
+    row("Passed coins (buy now), for comparison", passed, true) +
+    (ctl.length ? Object.entries(groups).sort((a, b) => b[1].length - a[1].length).map(([g, list]) => row("Rejected: " + g, list)).join("")
+      : `<tr><td colspan="7" class="empty">Starts filling with the next GitHub runs.</td></tr>`);
+}
 function renderTrack() {
-  const es = Object.values(track).sort((a, b) => Date.parse(b.logged) - Date.parse(a.logged));
+  const es = mine().sort((a, b) => Date.parse(b.logged) - Date.parse(a.logged));
+  renderControl(es);
   updateTrackCount(); renderPaper();
   const p = portfolio(es);
   countUp($("#heroValue"), p.value, v => money(v));
@@ -1338,7 +1364,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-06e";
+const VERSION = "2026-10-06f";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {

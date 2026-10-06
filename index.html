@@ -662,13 +662,31 @@ function makePlan(c, zone, low2h, size) {
     legs: [{part: 0.5, usd: a, tp: entry * 2, label: "take profit at 2x"}, {part: 0.4, usd: b, tp: entry * 3, label: "take profit at 3x"},
       {part: 0.1, usd: bet - a - b, tp: null, label: "moonbag: after it fills, swap the stop for a 40% trailing stop"}]};
 }
+// Chart pattern snapshot from the last 6 hours of 15-minute candles, saved for the weekly "What worked" study.
+function chartFeatures(candles, price) {
+  if (candles.length < 4 || !price) return null;
+  const last8 = candles.slice(-8), last4 = candles.slice(-4), prev4 = candles.slice(-8, -4), prev5 = candles.slice(-5, -1);
+  const vol8 = sum(last8.map(x => x[5])), zone = vol8 ? sum(last8.map(x => (x[2] + x[3] + x[4]) / 3 * x[5])) / vol8 : null;
+  const pct = (a, b) => a && b ? Math.round((a / b - 1) * 1000) / 10 : null;
+  const pv = sum(prev4.map(x => x[5]));
+  return {
+    runup6h: pct(price, candles[0][1]), runup2h: pct(price, last8[0][1]), distSupport: pct(price, zone),
+    fromHigh6h: pct(price, Math.max(...candles.map(x => x[2]))),
+    swing: Math.round(sum(last8.map(x => x[3] ? (x[2] - x[3]) / x[3] * 100 : 0)) / last8.length * 10) / 10,
+    volTrend: pv ? Math.round(sum(last4.map(x => x[5])) / pv * 100) / 100 : null,
+    higherLows: last4.filter((b, i) => prev5[i] && b[3] > prev5[i][3]).length,
+    greenShare: Math.round(last8.filter(x => x[4] > x[1]).length / last8.length * 100) / 100, candles: candles.length,
+  };
+}
 async function addLevels(c, src, size, say) {
   c.order = null;
   if (!c.pair) return;
   let candles;
-  try { candles = (((await getJSONSlow(`${GT}/${src.network}/pools/${c.pair}/ohlcv/minute?aggregate=15&limit=12`, say)).data || {}).attributes || {}).ohlcv_list || []; }
+  try { candles = (((await getJSONSlow(`${GT}/${src.network}/pools/${c.pair}/ohlcv/minute?aggregate=15&limit=24`, say)).data || {}).attributes || {}).ohlcv_list || []; }
   catch (e) { return; }
-  const last2h = candles.sort((x, y) => x[0] - y[0]).slice(-8);
+  candles.sort((x, y) => x[0] - y[0]);
+  c.chartF = chartFeatures(candles, c.price);
+  const last2h = candles.slice(-8);
   const vol = sum(last2h.map(x => x[5]));
   const zone = vol > 0 ? sum(last2h.map(x => (x[2] + x[3] + x[4]) / 3 * x[5])) / vol : (last2h.length ? sum(last2h.map(x => x[4])) / last2h.length : null);
   const low2h = last2h.length ? Math.min(...last2h.map(x => x[3])) : null;
@@ -939,6 +957,7 @@ function logPassed(res) {
         bigBuys: b.buys || 0, bigBuyUsd: Math.round(b.buyUsd || 0), bigSells: b.sells || 0, bigSellUsd: Math.round(b.sellUsd || 0),
         bigWallets: b.wallets || 0, bigBuyers: b.buyers || [], whale: !!isWhale(c),
         hourUtc: new Date().getUTCHours(), weekday: new Date().getUTCDay(), window: res.hours,
+        chart: c.chartF || null, plannedEntry: (c.order || {}).entry || null, planOk: (c.order || {}).ok ?? null,
       },
       now: null, liq: null, best: null, t2: null, exit: null, final: false, checked: null, cash: 0, pos: 1,
     };
@@ -1284,7 +1303,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-06b";
+const VERSION = "2026-10-06c";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {

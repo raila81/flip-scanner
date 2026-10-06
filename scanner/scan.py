@@ -522,15 +522,33 @@ def make_plan(c, zone, low2h, size):
             "aboveSupport": above, "bet": bet, "expiryH": 12, "legs": legs, "why": why, "manual": rh}
 
 
+def chart_features(candles, price):
+    """Chart pattern snapshot from the last 6 hours of 15-minute candles. Saved for the weekly 'What worked' study."""
+    if len(candles) < 4 or not price:
+        return None
+    last8, last4, prev4 = candles[-8:], candles[-4:], candles[-8:-4]
+    vol8 = sum(x[5] for x in last8)
+    zone = sum((x[2] + x[3] + x[4]) / 3 * x[5] for x in last8) / vol8 if vol8 else None
+    pct = lambda a, b: round((a / b - 1) * 100, 1) if a and b else None
+    return dict(
+        runup6h=pct(price, candles[0][1]), runup2h=pct(price, last8[0][1]),
+        distSupport=pct(price, zone), fromHigh6h=pct(price, max(x[2] for x in candles)),
+        swing=round(sum((x[2] - x[3]) / x[3] * 100 for x in last8 if x[3]) / len(last8), 1),
+        volTrend=round(sum(x[5] for x in last4) / sum(x[5] for x in prev4), 2) if prev4 and sum(x[5] for x in prev4) else None,
+        higherLows=sum(1 for a, b in zip(candles[-5:-1], last4) if b[3] > a[3]),
+        greenShare=round(sum(1 for x in last8 if x[4] > x[1]) / len(last8), 2), candles=len(candles))
+
+
 def add_levels(c, src, size):
     c["order"] = None
     if not c.get("pair"):
         return
     try:
-        d = get_slow(f"{GT}/{src['network']}/pools/{c['pair']}/ohlcv/minute?aggregate=15&limit=12")
+        d = get_slow(f"{GT}/{src['network']}/pools/{c['pair']}/ohlcv/minute?aggregate=15&limit=24")
         candles = sorted(((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or [])
     except Exception:
         return
+    c["chartF"] = chart_features(candles, c["price"])
     last2h = candles[-8:]
     vol = sum(x[5] for x in last2h)
     zone = (sum((x[2] + x[3] + x[4]) / 3 * x[5] for x in last2h) / vol) if vol > 0 else (sum(x[4] for x in last2h) / len(last2h) if last2h else None)
@@ -638,7 +656,8 @@ def log_passed(track, res):
                     hasX=bool(safe_url(c["x"])), hasTg=bool(safe_url(c["telegram"])), hasWeb=bool(safe_url(c["website"])),
                     bigBuys=b.get("buys", 0), bigBuyUsd=round(b.get("buyUsd", 0)), bigSells=b.get("sells", 0),
                     bigSellUsd=round(b.get("sellUsd", 0)), bigWallets=b.get("wallets", 0), bigBuyers=b.get("buyers", []),
-                    whale=is_whale(c), hourUtc=now.hour, weekday=now.weekday(), window=res["hours"], auto=True),
+                    whale=is_whale(c), hourUtc=now.hour, weekday=now.weekday(), window=res["hours"], auto=True,
+                    chart=c.get("chartF"), plannedEntry=(c.get("order") or {}).get("entry"), planOk=(c.get("order") or {}).get("ok")),
                 now=None, liq=None, best=None, t2=None, exit=None, final=False, checked=None, cash=0.0, pos=1.0)
             track[c["token"]] = dict(base, strategy="now", entry=c["price"], entryT=ts_of(res["finished"]),
                                      stop0=c["price"] * NOW_STOP, outcome="Open")

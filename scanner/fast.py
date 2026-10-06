@@ -27,7 +27,7 @@ import scan as S  # noqa: E402
 import playbooks as PB  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-S.PAUSE = 3.5            # GeckoTerminal allows 30 calls a minute; 2.5 s still drew "slow down" answers in the test, 3.5 s is safe
+S.PAUSE = 5              # GeckoTerminal says 30 calls a minute, but 3.5 s still drew "slow down" (30 s lost each); 5 s is faster overall
 S.CONTROL_PER_RUN = 2    # the control group grows slowly here, a cycle is short
 S.CONTROL_OPEN_MAX = 60
 S.CHECK_BUDGET_S = 300

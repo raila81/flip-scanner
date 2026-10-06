@@ -6,7 +6,7 @@ Same rules as index.html. Writes two files the page reads:
   data/track.json   the paper portfolio: every passed coin, plus what happened since
 
 Free public data only: GeckoTerminal, DexScreener, RugCheck, GoPlus. No keys.
-Usage: python3 scanner/scan.py [--hours 6] [--chains pumpfun,robinhood,movers] [--out data]
+Usage: python3 scanner/scan.py [--hours 6] [--chains pumpfun,robinhood,movers,small,fresh] [--out data]
 """
 import argparse
 import json
@@ -20,11 +20,12 @@ from datetime import datetime, timezone
 from html import unescape
 
 GT = "https://api.geckoterminal.com/api/v2/networks"
+PF = "https://frontend-api-v3.pump.fun"  # pump.fun's own coin list (no key; blocks browsers, works from scripts)
 UA = {"User-Agent": "Mozilla/5.0 flip-scanner (github.com/raila81/flip-scanner)"}
 PAUSE = 7
 WHALE = 5000
 STOP, COST = 0.67, 0.03
-PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100, "small": 50}
+PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100, "small": 50, "fresh": 50}
 
 PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"
 RH_CHAIN_ID = "4663"
@@ -79,7 +80,18 @@ SOURCES = {
         # Quiet coins trade little, so the sell minimums are low here (a coin that cannot be sold still fails the safety check).
         "limits": dict(STD_LIMITS, minLiq=3000, maxLiq=20000, minTx24=30, minSells24=30, minSells1=1, maxAge=168),
     },
+    # Fresh graduates (Rainer, Oct 6 2026): coins that left the pump.fun curve 15 minutes to 2 hours ago, read from
+    # pump.fun's own list (the busiest-pools list hides them). Most sit at a $10-40K market cap, under the $69K
+    # graduation price: a dip buy, not a launch buy. Same safety checks, pool $8K+ (under $10K is a warning),
+    # $50 paper bets. Volume vs market cap may run to 25x here: a fresh pool trades its whole cap many times over.
+    # Coins an earlier source already kept are skipped, so a coin shows once.
+    "fresh": {
+        "label": "Fresh graduates (pump.fun, 15 min to 2h)", "network": "solana", "dexChain": "solana", "tinyOk": True,
+        "feeds": lambda h: [{"name": "just graduated", "pages": 4, "fetch": lambda page: pumpfun_fresh(page, 2.5)}],
+        "limits": dict(STD_LIMITS, minLiq=8000, minTx24=40, minSells24=15, minSells1=5, maxVolToMc=25, maxAge=2, minAge=0.25, skipSeen=True),
+    },
 }
+TAKEN = set()  # tokens an earlier source kept this run
 FEED_CACHE = {}  # pool-list pages read this run, shared between sources
 
 
@@ -151,6 +163,20 @@ def fetch_pools(src, hours):
     for feed in src["feeds"](hours):
         planned += feed["pages"]
         for page in range(1, feed["pages"] + 1):
+            if feed.get("fetch"):
+                say(f"{src['label']}: reading {feed['name']} list, page {page} of {feed['pages']}")
+                try:
+                    data, done = feed["fetch"](page)
+                except Exception as e:
+                    say(f"{src['label']}: list failed ({e})")
+                    break
+                read += 1
+                for p in data:
+                    seen.setdefault(p["id"], p)
+                time.sleep(PAUSE)
+                if done:
+                    break
+                continue
             url = feed["url"](page)
             if url in FEED_CACHE:
                 d = FEED_CACHE[url]
@@ -171,6 +197,30 @@ def fetch_pools(src, hours):
             if len(data) < 20:
                 break
     return list(seen.values()), read, planned
+
+
+def pumpfun_fresh(page, window_h):
+    """One page (50 coins) of pump.fun's newest graduated coins, as their PumpSwap pools in GeckoTerminal's shape,
+    so the same red-flag filters apply. Returns (pools, done): done means older pages are past the window."""
+    d = get_slow(f"{PF}/coins?offset={(page - 1) * 50}&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false&complete=true")
+    if not isinstance(d, list):
+        raise ValueError(f"pump.fun answered {str(d)[:80]}")
+    now = time.time() * 1000
+    addrs, done = [], len(d) < 50
+    for c in d:
+        age_h = (now - (c.get("created_timestamp") or 0)) / 3.6e6
+        if age_h > window_h:
+            done = True  # created before the window (graduation is minutes to hours after creation)
+            continue
+        pool = c.get("pump_swap_pool") or c.get("pool_address")
+        if pool and num(c.get("usd_market_cap")) >= 8000:  # dead graduates ($2K) are not worth a lookup
+            addrs.append(pool)
+    pools = []
+    for i in range(0, len(addrs), 30):
+        time.sleep(PAUSE)
+        m = get_slow(f"{GT}/solana/pools/multi/{','.join(addrs[i:i + 30])}")
+        pools += [p for p in (m.get("data") or []) if p.get("attributes", {}).get("pool_created_at")]
+    return pools, done
 
 
 # ---------- step 2: red-flag filters ----------
@@ -203,8 +253,10 @@ def prefilter(pools, hours, L):
         reason = None
         if sym.lower() in NOT_NEW:
             reason = "money or stock token, not a new coin"
-        elif age_h < 1 or age_h > window:
+        elif age_h < L.get("minAge", 1) or age_h > window:
             reason = "outside time window"
+        elif L.get("skipSeen") and token in TAKEN:
+            reason = "already shown by another source"
         elif liq < L["minLiq"]:
             reason = f"pool under ${L['minLiq'] // 1000}K"
         elif L.get("maxLiq") and liq >= L["maxLiq"]:
@@ -226,8 +278,8 @@ def prefilter(pools, hours, L):
         if reason:
             dropped[reason] = dropped.get(reason, 0) + 1
             price = num(a.get("base_token_price_usd"))
-            if reason not in ("outside time window", "money or stock token, not a new coin", "pool under $20K", "pool under $3K",
-                              "pool over $20K (the main sources take it)") and price:
+            if reason not in ("outside time window", "money or stock token, not a new coin", "already shown by another source",
+                              "pool over $20K (the main sources take it)") and not reason.startswith("pool under") and price:
                 rejected.append(dict(token=token, symbol=sym, name=sym, reason=reason, pair=a.get("address"), price=price,
                                      liq=liq, mc=fdv, ageH=age_h))
             continue
@@ -600,6 +652,7 @@ def is_pass(c):
 
 def run_scan(hours, chains):
     FEED_CACHE.clear()
+    TAKEN.clear()
     result = {"hours": hours, "started": datetime.now(timezone.utc).isoformat(), "auto": True, "sources": []}
     order = {"PASS": 0, "PASS WITH WARNINGS": 1, "NOT CHECKED": 2, "FAIL": 3}
     for key in chains:
@@ -607,6 +660,7 @@ def run_scan(hours, chains):
         pools, read, planned = fetch_pools(src, hours)
         keep, dropped, rejected = prefilter(pools, hours, src["limits"])
         keep = sorted(keep, key=lambda k: k["ageH"])[:20]
+        TAKEN.update(k["token"] for k in keep)
         say(f"{src['label']}: {len(keep)} coins left after red-flag filters, running safety checks")
         cards = []
         for i, k in enumerate(keep, 1):
@@ -920,7 +974,7 @@ def check_results(track):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hours", type=float, default=6)
-    ap.add_argument("--chains", default="pumpfun,robinhood,movers")
+    ap.add_argument("--chains", default="pumpfun,robinhood,movers,small,fresh")
     ap.add_argument("--out", default="data")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)

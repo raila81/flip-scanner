@@ -240,6 +240,7 @@ table.track{min-width:980px}
       <button data-f="social">Has X or Telegram</button>
       <button data-f="utility">Says utility</button>
       <button data-f="whale">Whale buys</button>
+      <button data-f="unseen" id="unseenbtn">New since my last visit</button>
     </div>
     <div class="summary" id="summary"></div>
     <div class="grid" id="grid"></div>
@@ -836,6 +837,26 @@ function cardHtml(c, srcKey) {
     </div>
   </article>`;
 }
+// ---------- "new since my last visit" ----------
+// Remembers, in this browser, which coins were on screen. A visit ends when the tab is hidden for 30+ minutes or closed.
+let seenStore = {}, seenBefore = new Set(), hiddenAt = null;
+try { seenStore = JSON.parse(localStorage.getItem("flipSeen") || "{}"); } catch (e) { seenStore = {}; }
+const weekAgo = Date.now() - 7 * 864e5;
+for (const [t, at] of Object.entries(seenStore)) if (at < weekAgo) delete seenStore[t];
+seenBefore = new Set(Object.keys(seenStore));
+function saveSeen() { try { localStorage.setItem("flipSeen", JSON.stringify(seenStore)); } catch (e) {} }
+function markSeen(r) {
+  if (!r || !r.sources) return;
+  for (const s of r.sources) for (const c of s.passed) if (!seenStore[c.token]) seenStore[c.token] = Date.now();
+  saveSeen();
+  const n = r.sources.flatMap(s => s.passed).filter(c => !seenBefore.has(c.token)).length;
+  const b = document.getElementById("unseenbtn");
+  if (b) b.textContent = `New since my last visit (${n})`;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hiddenAt = Date.now(); saveSeen(); }
+  else if (hiddenAt && Date.now() - hiddenAt > 30 * 60000) { seenBefore = new Set(Object.keys(seenStore)); render(); }
+});
 function orderHtml(c) {
   const o = c.order;
   if (!o) return `<div class="ladder-foot"><span>No entry plan yet: the next scan adds one</span></div>`;
@@ -867,7 +888,9 @@ function render() {
   r.sources.forEach(s => s.passed.forEach(c => cards.push([c, s.key])));
   cards = cards.filter(([c, k]) => filter === "all" || filter === k ||
     (filter === "clean" && c.verdict === "PASS") || (filter === "social" && (safeUrl(c.x) || safeUrl(c.telegram))) ||
-    (filter === "utility" && /utility/.test(c.label || "")) || (filter === "whale" && isWhale(c)));
+    (filter === "utility" && /utility/.test(c.label || "")) || (filter === "whale" && isWhale(c)) ||
+    (filter === "unseen" && !seenBefore.has(c.token)));
+  markSeen(r);
   $("#grid").innerHTML = cards.length ? cards.map(([c, k], i) => cardHtml(c, k).replace('<article class="card', `<article style="animation-delay:${i * 60}ms" class="card`)).join("")
     : `<div class="empty">${r.finished ? "No coins match this filter." : "Coins will show here as each source finishes."}</div>`;
   const list = (items, title, why) => items.length ? `<details><summary>${title} (${items.length})</summary><ul>
@@ -1364,7 +1387,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-06f";
+const VERSION = "2026-10-06g";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {

@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run the scan
-        run: python3 scanner/scan.py --hours 6 --chains pumpfun,robinhood,movers --out data
+        run: python3 scanner/scan.py --hours 6 --chains pumpfun,robinhood,movers,small --out data
       - name: Save results
         run: |
           git config user.name "flip-scanner bot"

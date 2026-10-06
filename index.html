@@ -216,7 +216,8 @@ table.track{min-width:980px}
           <span class="label">Sources</span>
           <label class="src"><input type="checkbox" value="pumpfun" checked> pump.fun</label>
           <label class="src"><input type="checkbox" value="robinhood" checked> Robinhood</label>
-          <label class="src" title="Small Solana pools from $3K that just started moving. Paper bets of $100."><input type="checkbox" value="movers" checked> Movers</label>
+          <label class="src" title="Trending Solana coins with a pool of $20K or more, up to 7 days old. Paper bets of $100."><input type="checkbox" value="movers" checked> Movers</label>
+          <label class="src" title="pump.fun graduates and trending coins with a $3K-20K pool, up to 7 days old. Paper bets of $50."><input type="checkbox" value="small" checked> Small pools</label>
           <label class="src" title="After each scan, re-check the open paper positions so the portfolio is current"><input type="checkbox" id="autocheck" checked> Update portfolio after scan</label>
         </div>
         <div class="bar"><i id="barfill"></i></div>
@@ -236,6 +237,7 @@ table.track{min-width:980px}
       <button data-f="pumpfun">pump.fun</button>
       <button data-f="robinhood">Robinhood</button>
       <button data-f="movers">Movers</button>
+      <button data-f="small">Small pools</button>
       <button data-f="clean">No warnings only</button>
       <button data-f="social">Has X or Telegram</button>
       <button data-f="utility">Says utility</button>
@@ -269,7 +271,7 @@ table.track{min-width:980px}
     </div>
     <h2>Which rule works?</h2>
     <div class="twrap"><table class="baskets" id="baskets"></table></div>
-    <p class="tsub">The paper test copies the real Jupiter orders on each card. Every coin that passes gets two paper trades of $250 ($100 for Movers). <b>Buy now</b> buys at the scan price. <b>Limit at support</b> places the card's limit buy at support and fills only if the price comes down to it within 12 hours. Both then hold three orders with the card's stop-loss: 50% sells at 2x, 40% at 3x, and the last 10% rides a 40% trailing stop. Costs of 3% are taken off. The first rows compare the two strategies. The other rows slice the buy-now trades by rule.</p>
+    <p class="tsub">The paper test copies the real Jupiter orders on each card. Every coin that passes gets two paper trades of $250 ($100 for Movers, $50 for Small pools). <b>Buy now</b> buys at the scan price. <b>Limit at support</b> places the card's limit buy at support and fills only if the price comes down to it within 12 hours. Both then hold three orders with the card's stop-loss: 50% sells at 2x, 40% at 3x, and the last 10% rides a 40% trailing stop. Costs of 3% are taken off. The first rows compare the two strategies. The other rows slice the buy-now trades by rule.</p>
     <h2>What-if exits</h2>
     <div class="twrap"><table class="baskets" id="whatif"></table></div>
     <p class="tsub">The same trades (both strategies, since Oct 6) replayed with other ways to sell. It shows which exit plan would have made the most, before you change the real orders. Stops fill 10% worse than their price, like a fast crash. Open trades count at today's price. Under about 30 trades the numbers mean little.</p>
@@ -319,10 +321,23 @@ const SOURCES = {
       {name: "trending 1h", pages: 1, url: () => `${GT}/solana/trending_pools?duration=1h&page=1`},
       {name: "trending 6h", pages: 1, url: () => `${GT}/solana/trending_pools?duration=6h&page=1`},
     ],
-    limits: {minLiq: 3000, maxFdv: 5e6, minTx24: 50, minSells24: 50, minSells1: 5, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10, maxAge: 168},
+    limits: {minLiq: 20000, maxFdv: 5e6, minTx24: 50, minSells24: 50, minSells1: 5, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10, maxAge: 168},
+  },
+  // Small pools (Oct 6 2026): pump.fun graduates and trending coins with a $3K-20K pool, where sleepers like HOOKER sit.
+  // Same safety checks; a pool under $10K is a warning, not a fail. $50 paper bets. Reuses the lists the sources above read.
+  small: {
+    label: "Small pools (Solana, $3K-20K)", network: "solana", dexChain: "solana", tinyOk: true,
+    feeds: () => [
+      {name: "graduates", pages: 10, url: p => `${GT}/solana/dexes/pumpswap/pools?sort=h24_tx_count_desc&page=${p}`},
+      {name: "trending 5m", pages: 1, url: () => `${GT}/solana/trending_pools?duration=5m&page=1`},
+      {name: "trending 1h", pages: 1, url: () => `${GT}/solana/trending_pools?duration=1h&page=1`},
+      {name: "trending 6h", pages: 1, url: () => `${GT}/solana/trending_pools?duration=6h&page=1`},
+    ],
+    limits: {minLiq: 3000, maxLiq: 20000, maxFdv: 5e6, minTx24: 30, minSells24: 30, minSells1: 1, maxChg24: 2000, maxBuyRatio: 3, maxVolToMc: 10, maxAge: 168},
   },
 };
-const PAPER_BY = {pumpfun: 250, robinhood: 250, movers: 100};
+const PAPER_BY = {pumpfun: 250, robinhood: 250, movers: 100, small: 50};
+const FEED_CACHE = new Map(); // pool-list pages read this scan, shared between sources
 const PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"; // Pons launch tool on Robinhood Chain
 const UTIL_WORDS = /\b(app|platform|protocol|sdk|api|agent|agents|ai|infra|infrastructure|launchpad|dex|swap|wallet|bot|tool|tools|network|compute|gpu|defi|lending|staking|revenue|buy-?back|burn|fees?|dashboard|browser|game|marketplace|payments?|data|trading|terminal|server)\b/i;
 const MEME_WORDS = /\b(meme|memecoin|dog|doge|cat|kitten|pepe|frog|inu|shib|moon|wif|hat|vibes?|community|lol|cult|based|degen|pump it|to the moon|just a|no utility|for fun|chad|wojak|ape|monkey|bonk|fart|squirrel|hamster|penguin|duck|goat|mascot|ticker is)\b/i;
@@ -396,15 +411,19 @@ async function fetchPools(src, hours, say) {
     planned += feed.pages;
     for (let page = 1; page <= feed.pages; page++) {
       checkStop();
-      say(`${src.label}: reading ${feed.name} list, page ${page} of ${feed.pages}`);
-      let d;
-      try { d = await getJSONSlow(feed.url(page), say); }
-      catch (e) { if (scanRun.stopped) throw e; break; }
+      const url = feed.url(page);
+      let d = FEED_CACHE.get(url);
+      if (!d) {
+        say(`${src.label}: reading ${feed.name} list, page ${page} of ${feed.pages}`);
+        try { d = await getJSONSlow(url, say); }
+        catch (e) { if (scanRun.stopped) throw e; break; }
+        FEED_CACHE.set(url, d);
+        await sleep(PAUSE);
+      }
       read++;
       const data = (d.data || []).filter(p => !feed.onlyDex || p.relationships.dex.data.id === feed.onlyDex);
       for (const p of data) if (!seen.has(p.id)) seen.set(p.id, p);
       if ((d.data || []).length < 20) break;
-      await sleep(PAUSE);
     }
   }
   return {pools: [...seen.values()], read, planned};
@@ -436,6 +455,7 @@ function prefilter(pools, hours, L) {
     if (NOT_NEW.has(sym.toLowerCase())) reason = "money or stock token, not a new coin";
     else if (ageH < 1 || ageH > window) reason = "outside time window";
     else if (liq < L.minLiq) reason = `pool under $${L.minLiq / 1000}K`;
+    else if (L.maxLiq && liq >= L.maxLiq) reason = "pool over $20K (the main sources take it)";
     else if (fdv > L.maxFdv) reason = "market cap over $5M";
     else if (buys24 + sells24 < L.minTx24 || sells24 < L.minSells24 || sells1 < L.minSells1) reason = "too few sells (maybe can't sell)";
     else if (chg24 > L.maxChg24) reason = "already up over 2,000%";
@@ -555,7 +575,7 @@ async function robinhoodSafety(token, pairAddr, F, W, N) {
   N.holders = r.holder_count;
   N.creator = r.creator_address || null;
 }
-async function check(p) {
+async function check(p, tinyOk = false) {
   const chain = p.chainId, b = p.baseToken;
   const liq = (p.liquidity || {}).usd || 0;
   const mc = p.marketCap || p.fdv || 0;
@@ -564,7 +584,8 @@ async function check(p) {
   const tx1 = (p.txns || {}).h1 || {}, tx24 = (p.txns || {}).h24 || {};
   const chg = p.priceChange || {};
   const F = [], W = [], N = [];
-  if (liq < 10000) F.push(`Pool money only ${money(liq)} (under $10K)`);
+  if (liq < 10000 && !(tinyOk && liq >= 3000)) F.push(`Pool money only ${money(liq)} (under $10K)`);
+  else if (liq < 10000) W.push(`Tiny pool: ${money(liq)}. Max bet ${money(liq * 0.02)}; your own sale moves the price`);
   else if (liq < 20000) W.push(`Thin pool: ${money(liq)}`);
   if (ageMin < 30) W.push(`Only ${ageMin.toFixed(0)} minutes old: sniper bots are still selling`);
   if ((tx1.buys || 0) >= 20 && (tx1.sells || 0) === 0) F.push("Many buys, zero sells in 1h: maybe you cannot sell");
@@ -715,6 +736,7 @@ function planText(c) {
 // ---------- the scan ----------
 async function runScan(hours, chains, say, progress, onSource) {
   scanRun = {stopped: false};
+  FEED_CACHE.clear();
   const result = {hours, started: new Date().toISOString(), sources: []};
   const totalSteps = chains.reduce((n, k) => n + SOURCES[k].feeds(hours).reduce((m, f) => m + f.pages, 0) + 25, 0);
   let step = 0;
@@ -734,7 +756,7 @@ async function runScan(hours, chains, say, progress, onSource) {
       try {
         const p = await findPair(k.token, src.dexChain);
         if (p) {
-          const c = await check(p);
+          const c = await check(p, !!src.tinyOk);
           c.tpb = k.tpb; c.buyers24 = k.buyers24;
           // Bots trade the same coin over and over from a few wallets. HNUT: 97 buys per buyer, 158 buyers for a $4.7M coin.
           if (k.tpb && k.tpb > 10) { c.fails.push(`${k.tpb.toFixed(0)} buys per buyer in 24h: run by bots`); c.verdict = "FAIL"; }
@@ -795,7 +817,8 @@ function cardHtml(c, srcKey) {
   const img = safeUrl(c.image) ? `<img class="logo" src="${esc(c.image)}" alt="" data-initials="${initials}">` : `<div class="logo">${initials}</div>`;
   const verdict = c.verdict === "PASS" ? `<span class="badge b-pass">Pass</span>`
     : `<span class="badge b-warn">Pass, ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
-  const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : srcKey === "movers" ? `<span class="badge b-sol">Mover</span>` : `<span class="badge b-rh">Robinhood</span>`;
+  const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : srcKey === "movers" ? `<span class="badge b-sol">Mover</span>`
+    : srcKey === "small" ? `<span class="badge b-warn">Small pool</span>` : `<span class="badge b-rh">Robinhood</span>`;
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
   const tot = (c.buys24 || 0) + (c.sells24 || 0);
   const buyShare = tot ? c.buys24 / tot * 100 : 50;
@@ -1183,6 +1206,7 @@ const BASKETS = [
   ["pump.fun only", e => nowOnly(e) && e.source === "pumpfun"],
   ["Robinhood only", e => nowOnly(e) && e.source === "robinhood"],
   ["Movers only ($100 bets)", e => nowOnly(e) && e.source === "movers"],
+  ["Small pools only ($50 bets)", e => nowOnly(e) && e.source === "small"],
   ["Says utility only", e => nowOnly(e) && /utility/.test(e.label || "")],
   ["Whale buy seen", e => nowOnly(e) && !!(e.features || {}).whale],
   ["Big buys beat big sells", e => nowOnly(e) && (e.features || {}).bigBuyUsd > (e.features || {}).bigSellUsd],
@@ -1343,7 +1367,7 @@ function renderTrack() {
       <td>${when(e.logged)}</td>
       <td><b>${esc(e.symbol)}</b> <span class="tsub">${esc(e.name)}</span></td>
       <td>${strat(e)}</td>
-      <td>${e.source === "pumpfun" ? "pump.fun" : e.source === "movers" ? "Mover" : "Robinhood"}</td>
+      <td>${e.source === "pumpfun" ? "pump.fun" : e.source === "movers" ? "Mover" : e.source === "small" ? "Small pool" : "Robinhood"}</td>
       <td>${esc(e.label || "-")}</td>
       <td class="num">${e.warns}</td>
       <td class="num">${entryCell}</td>
@@ -1387,7 +1411,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json and data/track.json are written by scanner/scan.py (GitHub Actions, every hour).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-06g";
+const VERSION = "2026-10-06h";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {

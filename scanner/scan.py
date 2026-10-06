@@ -24,7 +24,7 @@ UA = {"User-Agent": "Mozilla/5.0 flip-scanner (github.com/raila81/flip-scanner)"
 PAUSE = 7
 WHALE = 5000
 STOP, COST = 0.67, 0.03
-PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100}
+PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100, "small": 50}
 
 PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"
 RH_CHAIN_ID = "4663"
@@ -45,7 +45,7 @@ MEME_WORDS = re.compile(
     r"\b(meme|memecoin|dog|doge|cat|kitten|pepe|frog|inu|shib|moon|wif|hat|vibes?|community|lol|cult|based|degen|pump it|"
     r"to the moon|just a|no utility|for fun|chad|wojak|ape|monkey|bonk|fart|squirrel|hamster|penguin|duck|goat|mascot|ticker is)\b", re.I)
 
-STD_LIMITS = dict(minLiq=20000, maxFdv=5e6, minTx24=100, minSells24=300, minSells1=10, maxChg24=2000, maxBuyRatio=3, maxVolToMc=10, maxAge=None)
+STD_LIMITS = dict(minLiq=20000, maxLiq=None, maxFdv=5e6, minTx24=100, minSells24=300, minSells1=10, maxChg24=2000, maxBuyRatio=3, maxVolToMc=10, maxAge=None)
 SOURCES = {
     "pumpfun": {
         "label": "pump.fun (Solana)", "network": "solana", "dexChain": "solana",
@@ -66,9 +66,21 @@ SOURCES = {
         "feeds": lambda h: [{"name": "trending 5m", "pages": 1, "url": lambda p: f"{GT}/solana/trending_pools?duration=5m&page=1"},
                             {"name": "trending 1h", "pages": 1, "url": lambda p: f"{GT}/solana/trending_pools?duration=1h&page=1"},
                             {"name": "trending 6h", "pages": 1, "url": lambda p: f"{GT}/solana/trending_pools?duration=6h&page=1"}],
-        "limits": dict(STD_LIMITS, minLiq=3000, minTx24=50, minSells24=50, minSells1=5, maxAge=168),
+        "limits": dict(STD_LIMITS, minLiq=20000, minTx24=50, minSells24=50, minSells1=5, maxAge=168),
+    },
+    # Small pools (Oct 6 2026): pump.fun graduates and trending coins with a $3K-20K pool, where sleepers like HOOKER sit.
+    # Same safety checks; a pool under $10K is a warning, not a fail. $50 paper bets. Reuses the lists the sources above read.
+    "small": {
+        "label": "Small pools (Solana, $3K-20K)", "network": "solana", "dexChain": "solana", "tinyOk": True,
+        "feeds": lambda h: [{"name": "graduates", "pages": 10, "url": lambda p: f"{GT}/solana/dexes/pumpswap/pools?sort=h24_tx_count_desc&page={p}"},
+                            {"name": "trending 5m", "pages": 1, "url": lambda p: f"{GT}/solana/trending_pools?duration=5m&page=1"},
+                            {"name": "trending 1h", "pages": 1, "url": lambda p: f"{GT}/solana/trending_pools?duration=1h&page=1"},
+                            {"name": "trending 6h", "pages": 1, "url": lambda p: f"{GT}/solana/trending_pools?duration=6h&page=1"}],
+        # Quiet coins trade little, so the sell minimums are low here (a coin that cannot be sold still fails the safety check).
+        "limits": dict(STD_LIMITS, minLiq=3000, maxLiq=20000, minTx24=30, minSells24=30, minSells1=1, maxAge=168),
     },
 }
+FEED_CACHE = {}  # pool-list pages read this run, shared between sources
 
 
 # ---------- helpers ----------
@@ -139,11 +151,17 @@ def fetch_pools(src, hours):
     for feed in src["feeds"](hours):
         planned += feed["pages"]
         for page in range(1, feed["pages"] + 1):
-            say(f"{src['label']}: reading {feed['name']} list, page {page} of {feed['pages']}")
-            try:
-                d = get_slow(feed["url"](page))
-            except Exception:
-                break
+            url = feed["url"](page)
+            if url in FEED_CACHE:
+                d = FEED_CACHE[url]
+            else:
+                say(f"{src['label']}: reading {feed['name']} list, page {page} of {feed['pages']}")
+                try:
+                    d = get_slow(url)
+                except Exception:
+                    break
+                FEED_CACHE[url] = d
+                time.sleep(PAUSE)
             read += 1
             data = d.get("data") or []
             for p in data:
@@ -152,7 +170,6 @@ def fetch_pools(src, hours):
                 seen.setdefault(p["id"], p)
             if len(data) < 20:
                 break
-            time.sleep(PAUSE)
     return list(seen.values()), read, planned
 
 
@@ -190,6 +207,8 @@ def prefilter(pools, hours, L):
             reason = "outside time window"
         elif liq < L["minLiq"]:
             reason = f"pool under ${L['minLiq'] // 1000}K"
+        elif L.get("maxLiq") and liq >= L["maxLiq"]:
+            reason = "pool over $20K (the main sources take it)"
         elif fdv > L["maxFdv"]:
             reason = "market cap over $5M"
         elif buys24 + sells24 < L["minTx24"] or sells24 < L["minSells24"] or sells1 < L["minSells1"]:
@@ -207,7 +226,8 @@ def prefilter(pools, hours, L):
         if reason:
             dropped[reason] = dropped.get(reason, 0) + 1
             price = num(a.get("base_token_price_usd"))
-            if reason not in ("outside time window", "money or stock token, not a new coin") and price:
+            if reason not in ("outside time window", "money or stock token, not a new coin", "pool under $20K", "pool under $3K",
+                              "pool over $20K (the main sources take it)") and price:
                 rejected.append(dict(token=token, symbol=sym, name=sym, reason=reason, pair=a.get("address"), price=price,
                                      liq=liq, mc=fdv, ageH=age_h))
             continue
@@ -362,7 +382,7 @@ def robinhood_safety(token, pair_addr, F, W, N):
     N["creator"] = r.get("creator_address")
 
 
-def check(p):
+def check(p, tiny_ok=False):
     chain, b = p["chainId"], p["baseToken"]
     liq = (p.get("liquidity") or {}).get("usd") or 0
     mc = p.get("marketCap") or p.get("fdv") or 0
@@ -372,8 +392,10 @@ def check(p):
     tx24 = (p.get("txns") or {}).get("h24") or {}
     chg = p.get("priceChange") or {}
     F, W, N = [], [], {"notes": [], "unchecked": None, "holders": None, "creator": None, "pons": False}
-    if liq < 10000:
+    if liq < 10000 and not (tiny_ok and liq >= 3000):
         F.append(f"Pool money only {money(liq)} (under $10K)")
+    elif liq < 10000:
+        W.append(f"Tiny pool: {money(liq)}. Max bet {money(liq * 0.02)}; your own sale moves the price")
     elif liq < 20000:
         W.append(f"Thin pool: {money(liq)}")
     if age_min < 30:
@@ -577,6 +599,7 @@ def is_pass(c):
 
 
 def run_scan(hours, chains):
+    FEED_CACHE.clear()
     result = {"hours": hours, "started": datetime.now(timezone.utc).isoformat(), "auto": True, "sources": []}
     order = {"PASS": 0, "PASS WITH WARNINGS": 1, "NOT CHECKED": 2, "FAIL": 3}
     for key in chains:
@@ -591,7 +614,7 @@ def run_scan(hours, chains):
             try:
                 p = find_pair(k["token"], src["dexChain"])
                 if p:
-                    c = check(p)
+                    c = check(p, tiny_ok=src.get("tinyOk", False))
                     c["tpb"], c["buyers24"] = k["tpb"], k["buyers24"]
                     # Bots trade the same coin over and over from a few wallets. HNUT: 97 buys per buyer.
                     if k["tpb"] and k["tpb"] > 10:

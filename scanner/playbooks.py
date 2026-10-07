@@ -34,6 +34,10 @@ BOOKS = {
     "surv_swing": dict(label="Survivor swing", take="surv", entry="market", legs=[{"part": 0.5, "tp": 1.5}, {"part": 0.3, "tp": 2}, {"part": 0.2, "trail": 0.3}],
                        stop=0.75, timeH=48, size=50, maxOpen=10, dayLoss=100,
                        desc="The same coins. Market buy. 50% sells at 1.5x, 30% at 2x, 20% trails 30%. Stop 25%, out after 48 hours."),
+    "curve_run": dict(label="Curve run", take="curve", entry="market", legs=None, legsFn="to90", stop=0.70, timeH=1.5, size=50, maxOpen=5, dayLoss=100,
+                      desc="Coins still on the pump.fun curve, 30-80% full. Market buy. Sell all at the price the curve has when 90% full, stop 30%, out after 90 minutes."),
+    "curve_quick": dict(label="Curve quick", take="curve", entry="market", legs=[{"part": 1.0, "tp": 1.5}], stop=0.75, timeH=0.5, size=50, maxOpen=5, dayLoss=100,
+                        desc="The same curve coins. Market buy. Sell all at 1.5x, stop 25%, out after 30 minutes."),
     "big": dict(label="Big coins (unproven)", take="big", entry="market", legs=[{"part": 0.5, "tp": 1.3}, {"part": 0.5, "tp": 1.5}], stop=0.85, timeH=48, size=100, maxOpen=5, dayLoss=200,
                 desc="Safe coins the scanner rejects only for a market cap over $5M. Market buy. 50% at 1.3x, 50% at 1.5x, stop 15%, out after 48 hours."),
 }
@@ -52,8 +56,10 @@ def takes(book, c, src_key):
         return False
     if t == "surv":
         return src_key == "survivors"
-    if src_key == "survivors":
-        return False  # survivors have their own playbooks, so the fresh-coin playbooks stay clean
+    if t == "curve":
+        return src_key == "curve" and (c.get("curveProgress") or 0) <= 80
+    if src_key in ("survivors", "curve"):
+        return False  # survivors and curve coins have their own playbooks, so the fresh-coin playbooks stay clean
     if t == "pass":
         return True
     if t == "plan":
@@ -105,13 +111,16 @@ def consider(books, cards):
                 cfg[name]["skipped"]["daily loss limit"] = cfg[name]["skipped"].get("daily loss limit", 0) + 1
                 continue
             o = c.get("order") or {}
+            legs = b["legs"]
+            if b.get("legsFn") == "to90":  # sell where the curve is 90% full: a fixed price target, known at the buy
+                legs = [{"part": 1.0, "tp": round(S.curve_ratio((c.get("curveProgress") or 0) / 100, 0.90), 3)}]
             e = dict(book=name, token=c["token"], pair=c["pair"], chain=c["chain"], source=src, symbol=c["symbol"], name=c["name"],
                      chart=c.get("chart"), logged=now_iso(), size=b["size"], price0=c["price"], liq0=c["liq"], mc0=c["mc"],
-                     legs=b["legs"], timeH=b["timeH"], stopRule=b["stop"], orderStop=o.get("stop") if o.get("ok") else None,
+                     legs=legs, timeH=b["timeH"], stopRule=b["stop"], orderStop=o.get("stop") if o.get("ok") else None,
                      entry=None, entryT=None, limit=None, stop0=None, now=None, liq=None, cash=0.0, pos=1.0, best=None, exit=None,
                      final=False, checked=None, outcome="Open", why="",
                      features=dict(firstSeenAgeH=c.get("firstSeenAgeH"), planOk=o.get("ok"), warns=len(c.get("warns") or []),
-                                   chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h")))
+                                   chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h"), curveProgress=c.get("curveProgress")))
             if b["entry"] == "limit":
                 e.update(limit=o["entry"], outcome="Waiting for fill", why=f"limit buy at {S.money(o['entry'])}")
             else:
@@ -179,10 +188,16 @@ def check_books(books, cache, say=S.say):
                     fill(e, e["entry"], e["entryT"])
             if e.get("entry"):
                 simulate(e, candles)
+        if e.get("entry") and not e["final"] and e.get("source") == "curve" and liq and liq >= 1000 and candles:
+            # A curve coin with pool money has graduated: the curve stopped. The bot would sell at the last curve price.
+            last = sorted(candles)[-1][4]
+            e.update(cash=e["cash"] + e["pos"] * last / e["entry"], pos=0.0, outcome="Graduated, sold at the last curve price", exit=int(time.time()), final=True)
         if e.get("entry") and not e["final"]:
             if (e.get("best") or 0) > 100 or (now_p and now_p / e["entry"] > 100):
                 e.update(cash=1.0, pos=0.0, outcome="Bad data", exit=int(time.time()), final=True)
-            elif (liq is not None and liq < 1000) or (now_p and now_p / e["entry"] < 0.1):
+            elif e.get("source") == "curve" and now_p and now_p / e["entry"] < 0.1:
+                e.update(cash=e["cash"] + e["pos"] * now_p / e["entry"], pos=0.0, outcome="Dead", exit=int(time.time()), final=True)
+            elif e.get("source") != "curve" and ((liq is not None and liq < 1000) or (now_p and now_p / e["entry"] < 0.1)):
                 e.update(cash=e["cash"] + e["pos"] * (now_p or 0) / e["entry"], pos=0.0, outcome="Dead", exit=int(time.time()), final=True)
             elif time.time() > e["entryT"] + e["timeH"] * 3600 + 7200:
                 e.update(cash=e["cash"] + e["pos"] * (now_p or 0) / e["entry"], pos=0.0, outcome="Time stop", exit=int(time.time()), final=True)

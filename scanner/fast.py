@@ -36,7 +36,8 @@ MAX_NEW_PER_CYCLE = 6
 RECHECK_S = 3600         # a coin that did not pass is looked at again after an hour (it may pass once it is older)
 CHECK_EVERY_S = 900      # open paper positions are re-checked every 15 minutes
 KEEP_PASSED_H, KEEP_FAILED_H = 6, 2
-FAST_SOURCES = ["fresh", "pumpfun", "survivors", "movers", "small"]  # Robinhood stays with the GitHub scan (slow chain, no limit orders)
+FAST_SOURCES = ["fresh", "curve", "pumpfun", "survivors", "movers", "small"]
+MAX_PER_SOURCE = {"curve": 4}  # Robinhood stays with the GitHub scan (slow chain, no limit orders)
 
 
 def now_iso():
@@ -94,6 +95,51 @@ def survivor_pools():
     return SURV["pools"]
 
 
+# ---------- the curve list: coins still on the pump.fun bonding curve, 30-80% full ----------
+def curve_coins():
+    """pump.fun's recently traded coins that have not graduated, 30-80% full and at least 10 minutes old.
+    Returns {mint: {coin, progress, ageH}} and their curve "pools" in GeckoTerminal's shape (the pool address is the curve)."""
+    cands, now = {}, time.time() * 1000
+    for page in (1, 2):
+        try:
+            d = S.get_slow(f"{S.PF}/coins?offset={(page - 1) * 50}&limit=50&sort=last_trade_timestamp&order=DESC&includeNsfw=false&complete=false")
+        except Exception as e:
+            S.say(f"curve list page {page} failed ({e})")
+            break
+        for c in d if isinstance(d, list) else []:
+            prog, age_h = S.curve_progress(c), (now - (c.get("created_timestamp") or now)) / 3.6e6
+            if 0.30 <= prog <= 0.80 and age_h >= 10 / 60 and c.get("bonding_curve") and not c.get("complete"):
+                cands[c["mint"]] = dict(coin=c, progress=prog, ageH=age_h)
+        time.sleep(S.PAUSE)
+    pools, addrs = [], [v["coin"]["bonding_curve"] for v in cands.values()]
+    for i in range(0, len(addrs), 30):
+        try:
+            m = S.get_slow(f"{S.GT}/solana/pools/multi/{','.join(addrs[i:i + 30])}")
+            pools += [p for p in (m.get("data") or []) if p.get("attributes", {}).get("pool_created_at")]
+        except Exception as e:
+            S.say(f"curve pools lookup failed ({e})")
+        time.sleep(S.PAUSE)
+    return cands, pools
+
+
+def check_curve(k, info):
+    """The normal safety check on a curve coin. DexScreener shows no pool money for the curve, so the real SOL
+    in the curve stands in for it (a tiny pool is a warning, not a fail)."""
+    p = S.find_pair(k["token"], "solana")
+    if not p or p.get("dexId") != "pumpfun":
+        return None  # graduated or gone since the list was read
+    native = S.num(p.get("priceNative"))
+    sol_usd = S.num(p.get("priceUsd")) / native if native else 0
+    p["liquidity"] = {"usd": (info["coin"].get("real_sol_reserves") or 0) / 1e9 * sol_usd}
+    c = check_one(k, S.SOURCES["curve"], pair=p)
+    if c:
+        pct = round(info["progress"] * 100)
+        c["curveProgress"] = pct
+        c["warns"].insert(0, f"Still on the pump.fun curve, {pct}% full: {S.curve_ratio(info['progress'], 1.0):.1f}x to graduation "
+                             f"(about 411 SOL market cap). No pool yet, Jupiter limit orders may not work here")
+    return c
+
+
 # ---------- the short lists ----------
 def fetch_lists():
     feeds = [
@@ -116,8 +162,8 @@ def fetch_lists():
 
 
 # ---------- one coin, the same checks as the GitHub scan ----------
-def check_one(k, src):
-    p = S.find_pair(k["token"], src["dexChain"])
+def check_one(k, src, pair=None):
+    p = pair or S.find_pair(k["token"], src["dexChain"])
     if not p:
         return None
     c = S.check(p, tiny_ok=src.get("tinyOk", False))
@@ -181,6 +227,7 @@ def cycle(state, track, fast, books, out):
     S.TAKEN.clear()
     pools, read, planned = fetch_lists()
     surv_pools = survivor_pools()
+    curve_cands, curve_pools = curve_coins()
     seen = state.setdefault("seen", {})
     now = time.time()
     changed = False
@@ -188,7 +235,8 @@ def cycle(state, track, fast, books, out):
     for key in FAST_SOURCES:
         src = S.SOURCES[key]
         limits = dict(src["limits"], skipSeen=True)  # a coin counts once, for the first source that takes it
-        src_pools = surv_pools if key == "survivors" else pools
+        src_pools = surv_pools if key == "survivors" else curve_pools if key == "curve" else pools
+        prefix = {"survivors": "S:", "curve": "C:"}.get(key, "")
         keep, dropped, rejected = S.prefilter(src_pools, 6, limits)
         S.TAKEN.update(k["token"] for k in keep)
         todo = []
@@ -199,23 +247,26 @@ def cycle(state, track, fast, books, out):
                 # entry here. Only the survivor playbooks' own trades count as "done" for this lane.
                 if f"surv_swing:{tok}" in books.get("trades", {}):
                     continue
+            elif key == "curve":
+                if f"curve_quick:{tok}" in books.get("trades", {}) or tok not in curve_cands:
+                    continue
             elif tok in track:
                 seen.setdefault(tok, {})["status"] = "passed"
                 continue
-            st = seen.get(("S:" if key == "survivors" else "") + tok)
+            st = seen.get(prefix + tok)
             if st and (st.get("status") == "passed" or now - st.get("last", 0) < RECHECK_S):
                 continue
             todo.append(k)
-        todo = todo[:MAX_NEW_PER_CYCLE]
+        todo = todo[:MAX_PER_SOURCE.get(key, MAX_NEW_PER_CYCLE)]
         cards = []
         for k in todo:
-            sk = ("S:" if key == "survivors" else "") + k["token"]
+            sk = prefix + k["token"]
             seen.setdefault(sk, {"first": now, "firstAgeH": round(k["ageH"], 2)})
             seen[sk]["last"] = now
             seen[sk]["status"] = "unchecked"
             S.say(f"{src['label']}: checking {k['symbol']} ({k['ageH']:.1f}h old)")
             try:
-                c = check_one(k, src)
+                c = check_curve(k, curve_cands[k["token"]]) if key == "curve" else check_one(k, src)
             except Exception as e:
                 S.say(f"{k['symbol']}: check failed ({e})")
                 c = None
@@ -242,17 +293,18 @@ def cycle(state, track, fast, books, out):
                                    passed=[c for c in cards if S.is_pass(c)], unchecked=[c for c in cards if c["verdict"] == "NOT CHECKED"],
                                    failed=[c for c in cards if c["verdict"] == "FAIL"]))
     # Big-coin lane: rejected only for size, checked for safety, paper traded by the "Big coins" playbook only
-    big_rej = {r["token"]: r for s in res["sources"] if s["key"] != "survivors" for r in s["rejected"] if r["reason"].startswith("market cap over")}
+    big_rej = {r["token"]: r for s in res["sources"] if s["key"] not in ("survivors", "curve") for r in s["rejected"] if r["reason"].startswith("market cap over")}
     big_cards = big_lane(list(big_rej.values()), seen, now)
     res["finished"] = now_iso()
     opened = PB.consider(books, [(c, s["key"]) for s in res["sources"] for c in s["passed"]] + [(c, "big") for c in big_cards if S.is_pass(c)])
-    added = S.log_passed(track, res)
+    res_main = dict(res, sources=[s for s in res["sources"] if s["key"] != "curve"])  # curve coins: playbooks only, the card plan makes no sense there
+    added = S.log_passed(track, res_main)
     for s in res["sources"]:
         for c in s["passed"]:
             for k in (c["token"], "dip:" + c["token"]):
                 if k in track and track[k].get("source") == s["key"]:  # not an older trade of the same coin from another source
                     track[k]["features"].update(fast=True, firstSeenAgeH=c["firstSeenAgeH"])
-    ctl = S.log_control(track, res)
+    ctl = S.log_control(track, res_main)
     changed = changed or added or ctl
     res["sources"].append(dict(key="big", label="Fast: Big coins (over $5M market cap, safe)", looked=len(big_rej), pagesRead=read, pagesPlanned=planned,
                                rejected=[], dropped=[], passed=[c for c in big_cards if S.is_pass(c)],

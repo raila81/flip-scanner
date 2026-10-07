@@ -242,6 +242,7 @@ table.track{min-width:980px}
       <button data-f="fresh">Fresh graduates</button>
       <button data-f="big">Big coins</button>
       <button data-f="survivors">Survivors</button>
+      <button data-f="curve">On the curve</button>
       <button data-f="clean">No warnings only</button>
       <button data-f="social">Has X or Telegram</button>
       <button data-f="utility">Says utility</button>
@@ -279,7 +280,7 @@ table.track{min-width:980px}
     <h2>What-if exits</h2>
     <div class="twrap"><table class="baskets" id="whatif"></table></div>
     <p class="tsub">The same trades (both strategies, since Oct 6) replayed with other ways to sell. It shows which exit plan would have made the most, before you change the real orders. Stops fill 10% worse than their price, like a fast crash. Open trades count at today's price. Under about 30 trades the numbers mean little.</p>
-    <h2>Playbooks: 9 bot setups, side by side</h2>
+    <h2>Playbooks: 11 bot setups, side by side</h2>
     <div class="twrap"><table class="baskets" id="books"></table></div>
     <p class="tsub" id="booksnote">Each playbook is a complete bot setup the real bot can copy 1:1 with Jupiter: which passes it takes, market or limit buy, the exact sell orders, a time stop, bet size, max open coins and a daily loss limit. All of them paper trade the same coins from the VPS fast scan (since Oct 6, 2026). Costs of 3% are taken off. Open trades count at today's price. A playbook earns trust only when it is green in both the older and the newer half of its trades, and under about 30 closed trades the numbers mean little.</p>
     <h2>Control group: did the filters throw away winners?</h2>
@@ -344,7 +345,7 @@ const SOURCES = {
   },
 };
 // "fresh" (just-graduated pump.fun coins) runs only in the hourly auto-scan (scanner/scan.py): pump.fun's list blocks browsers.
-const PAPER_BY = {pumpfun: 250, robinhood: 250, movers: 100, small: 50, fresh: 50, survivors: 50};
+const PAPER_BY = {pumpfun: 250, robinhood: 250, movers: 100, small: 50, fresh: 50, survivors: 50, curve: 50};
 const FEED_CACHE = new Map(); // pool-list pages read this scan, shared between sources
 const PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"; // Pons launch tool on Robinhood Chain
 const UTIL_WORDS = /\b(app|platform|protocol|sdk|api|agent|agents|ai|infra|infrastructure|launchpad|dex|swap|wallet|bot|tool|tools|network|compute|gpu|defi|lending|staking|revenue|buy-?back|burn|fees?|dashboard|browser|game|marketplace|payments?|data|trading|terminal|server)\b/i;
@@ -829,7 +830,7 @@ function cardHtml(c, srcKey) {
   const verdict = c.verdict === "PASS" ? `<span class="badge b-pass">Pass</span>`
     : `<span class="badge b-warn">Pass, ${c.warns.length} warning${c.warns.length === 1 ? "" : "s"}</span>`;
   const chain = srcKey === "pumpfun" ? `<span class="badge b-sol">pump.fun</span>` : srcKey === "movers" ? `<span class="badge b-sol">Mover</span>`
-    : srcKey === "small" ? `<span class="badge b-warn">Small pool</span>` : srcKey === "fresh" ? `<span class="badge b-warn">Fresh graduate</span>` : srcKey === "big" ? `<span class="badge b-sol">Big coin, over $5M</span>` : srcKey === "survivors" ? `<span class="badge b-pass">Survivor, 6-48h</span>` : `<span class="badge b-rh">Robinhood</span>`;
+    : srcKey === "small" ? `<span class="badge b-warn">Small pool</span>` : srcKey === "fresh" ? `<span class="badge b-warn">Fresh graduate</span>` : srcKey === "big" ? `<span class="badge b-sol">Big coin, over $5M</span>` : srcKey === "survivors" ? `<span class="badge b-pass">Survivor, 6-48h</span>` : srcKey === "curve" ? `<span class="badge b-warn">On the curve, ${c.curveProgress}% full</span>` : `<span class="badge b-rh">Robinhood</span>`;
   const fastBadge = c.fast ? `<span class="badge b-pass" title="Found by the fast scan on the VPS, checked every 2 minutes">Fast scan, seen at ${c.firstSeenAgeH}h old</span>` : "";
   const warns = c.warns.length ? `<ul class="warns">${c.warns.map(w => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
   const tot = (c.buys24 || 0) + (c.sells24 || 0);
@@ -1221,6 +1222,7 @@ const BASKETS = [
   ["Small pools only ($50 bets)", e => nowOnly(e) && e.source === "small"],
   ["Fresh graduates only ($50 bets)", e => nowOnly(e) && e.source === "fresh"],
   ["Survivors only ($50 bets)", e => nowOnly(e) && e.source === "survivors"],
+  ["On the curve only (playbooks, no portfolio trades)", e => nowOnly(e) && e.source === "curve"],
   ["Fast scan only (VPS, from Oct 6)", e => nowOnly(e) && !!(e.features || {}).fast],
   ["GitHub scan only (slow, before Oct 6 evening)", e => nowOnly(e) && !(e.features || {}).fast],
   ["Says utility only", e => nowOnly(e) && /utility/.test(e.label || "")],
@@ -1384,7 +1386,7 @@ function renderTrack() {
       <td>${when(e.logged)}</td>
       <td><b>${esc(e.symbol)}</b> <span class="tsub">${esc(e.name)}</span></td>
       <td>${strat(e)}</td>
-      <td>${e.source === "pumpfun" ? "pump.fun" : e.source === "movers" ? "Mover" : e.source === "small" ? "Small pool" : e.source === "fresh" ? "Fresh graduate" : e.source === "survivors" ? "Survivor" : "Robinhood"}</td>
+      <td>${e.source === "pumpfun" ? "pump.fun" : e.source === "movers" ? "Mover" : e.source === "small" ? "Small pool" : e.source === "fresh" ? "Fresh graduate" : e.source === "survivors" ? "Survivor" : e.source === "curve" ? "On the curve" : "Robinhood"}</td>
       <td>${esc(e.label || "-")}</td>
       <td class="num">${e.warns}</td>
       <td class="num">${entryCell}</td>
@@ -1428,7 +1430,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-07a";
+const VERSION = "2026-10-07b";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {

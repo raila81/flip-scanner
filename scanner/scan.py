@@ -26,7 +26,7 @@ UA = {"User-Agent": "Mozilla/5.0 flip-scanner (github.com/raila81/flip-scanner)"
 PAUSE = 7
 WHALE = 5000
 STOP, COST = 0.67, 0.03
-PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100, "small": 50, "fresh": 50, "survivors": 50}
+PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100, "small": 50, "fresh": 50, "survivors": 50, "curve": 50}
 
 PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"
 RH_CHAIN_ID = "4663"
@@ -94,6 +94,30 @@ SOURCES = {
     },
 }
 TAKEN = set()  # tokens an earlier source kept this run
+
+# On the curve (Rainer, Oct 7 2026): coins still on the pump.fun bonding curve, 30-80% full, read only by fast.py.
+# The curve is a fixed price ladder: with 1,073M virtual tokens and 30 virtual SOL at launch, the price grows with
+# 1 / (virtual tokens)^2 as 793.1M real tokens sell. Graduation (100% full) is always about 411 SOL of market cap.
+# "Pool money" here is the real SOL sitting in the curve. No LP, no pool, so a pool under $10K is a warning only.
+CURVE_TOKENS, CURVE_VT0 = 793.1e12, 1073e6
+
+
+def curve_progress(coin):
+    """How full the curve is, 0-1, from pump.fun's real_token_reserves."""
+    return max(0.0, min(1.0, 1 - (coin.get("real_token_reserves") or 0) / CURVE_TOKENS))
+
+
+def curve_ratio(p_from, p_to):
+    """Price at curve progress p_to divided by the price at p_from (both 0-1)."""
+    vt = lambda p: CURVE_VT0 - 793.1e6 * p
+    return (vt(p_from) / vt(p_to)) ** 2
+
+
+SOURCES["curve"] = {
+    "label": "On the curve (pump.fun, 30-80% full)", "network": "solana", "dexChain": "solana", "tinyOk": "curve",
+    "feeds": lambda h: [],
+    "limits": dict(STD_LIMITS, minLiq=2000, minTx24=100, minSells24=30, minSells1=5, maxVolToMc=25, minAge=10 / 60, maxAge=24),
+}
 
 # Survivors (Rainer, Oct 7 2026): analysis of 122 fast-scan trades showed the median fresh graduate sits at 0.42x its entry
 # after 5 hours, so the entry on 15-120 minute old coins is the problem. This lane paper trades coins that already lasted
@@ -474,7 +498,10 @@ def check(p, tiny_ok=False):
     tx24 = (p.get("txns") or {}).get("h24") or {}
     chg = p.get("priceChange") or {}
     F, W, N = [], [], {"notes": [], "unchecked": None, "holders": None, "creator": None, "pons": False}
-    if liq < 10000 and not (tiny_ok and liq >= 3000):
+    if tiny_ok == "curve":  # on the pump.fun curve the "pool" is the real SOL in the curve: small by design, never a fail
+        if liq < 10000:
+            W.append(f"Curve holds only {money(liq)} in SOL. Max bet {money(liq * 0.02)}; your own buy moves the price")
+    elif liq < 10000 and not (tiny_ok and liq >= 3000):
         F.append(f"Pool money only {money(liq)} (under $10K)")
     elif liq < 10000:
         W.append(f"Tiny pool: {money(liq)}. Max bet {money(liq * 0.02)}; your own sale moves the price")

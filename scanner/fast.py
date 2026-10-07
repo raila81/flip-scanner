@@ -36,7 +36,7 @@ MAX_NEW_PER_CYCLE = 6
 RECHECK_S = 3600         # a coin that did not pass is looked at again after an hour (it may pass once it is older)
 CHECK_EVERY_S = 900      # open paper positions are re-checked every 15 minutes
 KEEP_PASSED_H, KEEP_FAILED_H = 6, 2
-FAST_SOURCES = ["fresh", "pumpfun", "movers", "small"]  # Robinhood stays with the GitHub scan (slow chain, no limit orders)
+FAST_SOURCES = ["fresh", "pumpfun", "survivors", "movers", "small"]  # Robinhood stays with the GitHub scan (slow chain, no limit orders)
 
 
 def now_iso():
@@ -65,6 +65,33 @@ def code_hash():
             with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name), "rb") as fh:
                 h.update(fh.read())
     return h.hexdigest()
+
+
+# ---------- the survivors list: slow coins, read every 10 minutes and reused between ----------
+SURV_EVERY_S = 600
+SURV = {"t": 0.0, "pools": []}
+
+
+def survivor_pools():
+    """PumpSwap pools that are busy or trending today: the candidates for the survivors lane (coins 6-48h old)."""
+    if time.time() - SURV["t"] < SURV_EVERY_S and SURV["pools"]:
+        return SURV["pools"]
+    feeds = [(f"busiest PumpSwap p{p}", f"{S.GT}/solana/dexes/pumpswap/pools?sort=h24_tx_count_desc&page={p}") for p in (1, 2, 3, 4)]
+    feeds += [(f"volume PumpSwap p{p}", f"{S.GT}/solana/dexes/pumpswap/pools?sort=h24_volume_usd_desc&page={p}") for p in (1, 2)]
+    feeds += [("trending 6h", f"{S.GT}/solana/trending_pools?duration=6h&page=1"), ("trending 24h", f"{S.GT}/solana/trending_pools?duration=24h&page=1")]
+    pools = {}
+    for name, url in feeds:
+        try:
+            for p in S.get_slow(url).get("data") or []:
+                if p.get("attributes", {}).get("pool_created_at") and p["relationships"]["dex"]["data"]["id"] == "pumpswap":
+                    pools.setdefault(p["id"], p)
+        except Exception as e:
+            S.say(f"survivors list {name} failed ({e})")
+        time.sleep(S.PAUSE)
+    if pools:
+        SURV["t"], SURV["pools"] = time.time(), list(pools.values())
+        S.say(f"survivors list refreshed: {len(pools)} PumpSwap pools")
+    return SURV["pools"]
 
 
 # ---------- the short lists ----------
@@ -153,6 +180,7 @@ def cycle(state, track, fast, books, out):
     S.FEED_CACHE.clear()
     S.TAKEN.clear()
     pools, read, planned = fetch_lists()
+    surv_pools = survivor_pools()
     seen = state.setdefault("seen", {})
     now = time.time()
     changed = False
@@ -160,24 +188,31 @@ def cycle(state, track, fast, books, out):
     for key in FAST_SOURCES:
         src = S.SOURCES[key]
         limits = dict(src["limits"], skipSeen=True)  # a coin counts once, for the first source that takes it
-        keep, dropped, rejected = S.prefilter(pools, 6, limits)
+        src_pools = surv_pools if key == "survivors" else pools
+        keep, dropped, rejected = S.prefilter(src_pools, 6, limits)
         S.TAKEN.update(k["token"] for k in keep)
         todo = []
         for k in sorted(keep, key=lambda k: k["ageH"]):  # newest first: timing is the point of this loop
             tok = k["token"]
-            if tok in track:
+            if key == "survivors":
+                # A coin that passed as a fresh graduate and is still alive at 6+ hours is exactly a survivor: it gets its own
+                # entry here. Only the survivor playbooks' own trades count as "done" for this lane.
+                if f"surv_swing:{tok}" in books.get("trades", {}):
+                    continue
+            elif tok in track:
                 seen.setdefault(tok, {})["status"] = "passed"
                 continue
-            st = seen.get(tok)
+            st = seen.get(("S:" if key == "survivors" else "") + tok)
             if st and (st.get("status") == "passed" or now - st.get("last", 0) < RECHECK_S):
                 continue
             todo.append(k)
         todo = todo[:MAX_NEW_PER_CYCLE]
         cards = []
         for k in todo:
-            seen.setdefault(k["token"], {"first": now, "firstAgeH": round(k["ageH"], 2)})
-            seen[k["token"]]["last"] = now
-            seen[k["token"]]["status"] = "unchecked"
+            sk = ("S:" if key == "survivors" else "") + k["token"]
+            seen.setdefault(sk, {"first": now, "firstAgeH": round(k["ageH"], 2)})
+            seen[sk]["last"] = now
+            seen[sk]["status"] = "unchecked"
             S.say(f"{src['label']}: checking {k['symbol']} ({k['ageH']:.1f}h old)")
             try:
                 c = check_one(k, src)
@@ -187,7 +222,7 @@ def cycle(state, track, fast, books, out):
             time.sleep(1)
             if not c:
                 continue
-            c["fast"], c["firstSeenAgeH"], c["checkedAt"] = True, seen[k["token"]].get("firstAgeH", round(k["ageH"], 2)), now_iso()
+            c["fast"], c["firstSeenAgeH"], c["checkedAt"] = True, seen[sk].get("firstAgeH", round(k["ageH"], 2)), now_iso()
             if S.is_pass(c):
                 S.add_info(c, src)
                 time.sleep(S.PAUSE)
@@ -198,16 +233,16 @@ def cycle(state, track, fast, books, out):
                 if c["verdict"] == "PASS" and c["warns"]:
                     c["verdict"] = "PASS WITH WARNINGS"
                 time.sleep(S.PAUSE)
-            seen[k["token"]]["status"] = "passed" if S.is_pass(c) else "failed" if c["verdict"] == "FAIL" else "unchecked"
+            seen[sk]["status"] = "passed" if S.is_pass(c) else "failed" if c["verdict"] == "FAIL" else "unchecked"
             cards.append(c)
         failed_safety = [dict(token=c["token"], symbol=c["symbol"], name=c["name"], reason="failed safety: " + c["fails"][0],
                               pair=c["pair"], price=c["price"], liq=c["liq"], mc=c["mc"], ageH=c["age_h"]) for c in cards if c["verdict"] == "FAIL"]
-        res["sources"].append(dict(key=key, label="Fast: " + src["label"], looked=len(pools), pagesRead=read, pagesPlanned=planned,
+        res["sources"].append(dict(key=key, label="Fast: " + src["label"], looked=len(src_pools), pagesRead=read, pagesPlanned=planned,
                                    rejected=failed_safety + rejected, dropped=[list(x) for x in dropped],
                                    passed=[c for c in cards if S.is_pass(c)], unchecked=[c for c in cards if c["verdict"] == "NOT CHECKED"],
                                    failed=[c for c in cards if c["verdict"] == "FAIL"]))
     # Big-coin lane: rejected only for size, checked for safety, paper traded by the "Big coins" playbook only
-    big_rej = {r["token"]: r for s in res["sources"] for r in s["rejected"] if r["reason"].startswith("market cap over")}
+    big_rej = {r["token"]: r for s in res["sources"] if s["key"] != "survivors" for r in s["rejected"] if r["reason"].startswith("market cap over")}
     big_cards = big_lane(list(big_rej.values()), seen, now)
     res["finished"] = now_iso()
     opened = PB.consider(books, [(c, s["key"]) for s in res["sources"] for c in s["passed"]] + [(c, "big") for c in big_cards if S.is_pass(c)])
@@ -215,7 +250,7 @@ def cycle(state, track, fast, books, out):
     for s in res["sources"]:
         for c in s["passed"]:
             for k in (c["token"], "dip:" + c["token"]):
-                if k in track:
+                if k in track and track[k].get("source") == s["key"]:  # not an older trade of the same coin from another source
                     track[k]["features"].update(fast=True, firstSeenAgeH=c["firstSeenAgeH"])
     ctl = S.log_control(track, res)
     changed = changed or added or ctl

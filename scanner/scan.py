@@ -26,7 +26,7 @@ UA = {"User-Agent": "Mozilla/5.0 flip-scanner (github.com/raila81/flip-scanner)"
 PAUSE = 7
 WHALE = 5000
 STOP, COST = 0.67, 0.03
-PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100, "small": 50, "fresh": 50}
+PAPER = {"pumpfun": 250, "robinhood": 250, "movers": 100, "small": 50, "fresh": 50, "survivors": 50}
 
 PONS_DEPLOYER = "0x3711cea4feade896c913c68f01eda97cb06d1a42"
 RH_CHAIN_ID = "4663"
@@ -94,6 +94,19 @@ SOURCES = {
     },
 }
 TAKEN = set()  # tokens an earlier source kept this run
+
+# Survivors (Rainer, Oct 7 2026): analysis of 122 fast-scan trades showed the median fresh graduate sits at 0.42x its entry
+# after 5 hours, so the entry on 15-120 minute old coins is the problem. This lane paper trades coins that already lasted
+# 6 to 48 hours and held up: still liquid and busy, not falling now, not down over 50% in 24h, not parabolic.
+# The pool lists come from scanner/fast.py (it keeps its own list cache), so "feeds" is empty here.
+SOURCES["survivors"] = {
+    "label": "Survivors (pump.fun, 6-48h, held up)", "network": "solana", "dexChain": "solana",
+    "feeds": lambda h: [],
+    # The 24-hour change counts from the launch for a coin this young, so a coin that rose and held shows a big number:
+    # the cap stays at the standard 2,000%. Pool floor $10K like the Robinhood source (under $20K is a card warning).
+    "limits": dict(STD_LIMITS, minLiq=10000, minTx24=200, minSells24=100, minSells1=3, minAge=6, maxAge=48,
+                   minChg1=-8, minChg6=-25, maxChg6=120, minChg24=-50),
+}
 FEED_CACHE = {}  # pool-list pages read this run, shared between sources
 
 
@@ -252,6 +265,8 @@ def prefilter(pools, hours, L):
         fdv = num(a.get("market_cap_usd")) or num(a.get("fdv_usd"))
         vol24 = num((a.get("volume_usd") or {}).get("h24"))
         chg24 = num((a.get("price_change_percentage") or {}).get("h24"))
+        chg1 = num((a.get("price_change_percentage") or {}).get("h1"))
+        chg6 = num((a.get("price_change_percentage") or {}).get("h6"))
         reason = None
         if sym.lower() in NOT_NEW:
             reason = "money or stock token, not a new coin"
@@ -268,7 +283,15 @@ def prefilter(pools, hours, L):
         elif buys24 + sells24 < L["minTx24"] or sells24 < L["minSells24"] or sells1 < L["minSells1"]:
             reason = "too few sells (maybe can't sell)"
         elif chg24 > L["maxChg24"]:
-            reason = "already up over 2,000%"
+            reason = f"already up over {L['maxChg24']:,}%"
+        elif L.get("minChg1") is not None and chg1 < L["minChg1"]:
+            reason = "falling in the last hour"
+        elif L.get("minChg6") is not None and chg6 < L["minChg6"]:
+            reason = "falling over 6 hours"
+        elif L.get("maxChg6") is not None and chg6 > L["maxChg6"]:
+            reason = "already ran up over 120% in 6 hours"
+        elif L.get("minChg24") is not None and chg24 < L["minChg24"]:
+            reason = "down over 50% in 24 hours (not a survivor)"
         elif (sells24 and buys24 / sells24 > L["maxBuyRatio"]) or (sells1 and buys1 / sells1 > L["maxBuyRatio"]):
             reason = "one-sided buying (over 3 buys per sell)"
         elif fdv and vol24 / fdv > L["maxVolToMc"]:

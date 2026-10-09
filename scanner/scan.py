@@ -869,13 +869,15 @@ def watch_fill(e, candles):
 SLIP = 0.10  # stops fill 10% worse than the stop price, like a real fast crash (Jupiter stops use up to 20% slippage)
 
 
-def run_legs(candles, entry, t_in, stop, legs, time_stop_s):
+def run_legs(candles, entry, t_in, stop, legs, time_stop_s, size=900, be=None):
     """Replay separate sell orders after a fill. Each leg: part of the bag, a take-profit multiple, or a trailing %.
     Legs without a trail use the shared stop. Inside one candle a stop counts before a target.
     The candle the buy sits in is skipped for exits: its low and high may come from before the buy
     (Oct 6 2026: 20 of 49 trades were "stopped" by a low that happened before the paper buy)."""
+    # size: candle length in seconds (900 = 15 minutes, 60 = 1 minute). be: once the price reaches be x entry, the stop
+    # moves up to the entry price (break-even). A trail leg with "act" only starts trailing once the peak reaches act x.
     st, cash, best, peak, first, t_tp, exit_t, last = ["open"] * len(legs), 0.0, 1.0, entry, True, None, None, entry
-    for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in - 899):
+    for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in - (size - 1)):
         last = c
         if first:
             first = False
@@ -884,7 +886,7 @@ def run_legs(candles, entry, t_in, stop, legs, time_stop_s):
         for i, lg in enumerate(legs):
             if st[i] != "open":
                 continue
-            if lg.get("trail"):
+            if lg.get("trail") and peak >= entry * lg.get("act", 1.0):
                 lvl = peak * (1 - lg["trail"])
                 if l <= lvl:
                     cash, st[i] = cash + lg["part"] * lvl * (1 - SLIP) / entry, "trail"
@@ -896,6 +898,8 @@ def run_legs(candles, entry, t_in, stop, legs, time_stop_s):
                 cash, st[i] = cash + lg["part"] * lg["tp"], "tp"
                 t_tp = t_tp or t
         peak = max(peak, h)
+        if be and peak >= entry * be and (stop is None or stop < entry):
+            stop = entry
         if time_stop_s and t - t_in > time_stop_s:
             for i, lg in enumerate(legs):
                 if st[i] == "open":

@@ -135,6 +135,17 @@ label.src:has(input:checked){border-color:var(--line)}
 .order .leg b{color:var(--lime);font-size:12.5px}
 .order .howto{font-size:11.5px;color:var(--muted);display:flex;gap:8px;align-items:flex-start;justify-content:space-between}
 .order .howto button{flex:none;font-size:12px;padding:6px 10px;border-radius:9px;background:var(--accent);color:var(--accent-ink);border:0;cursor:pointer;font-weight:600}
+.lrn{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin:10px 0}
+.lrn .r{background:var(--chip);border-radius:12px;padding:10px 12px;font-size:13px}
+.lrn .r b{display:block;font:700 14px "Space Grotesk",Inter,sans-serif;margin-bottom:4px}
+.lrn .r i{font-style:normal;color:var(--muted);font-size:12px;display:block}
+.lrn .r.good{outline:1px solid var(--lime)}
+.lhead{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;font-size:13.5px}
+.lhead b{font-family:"JetBrains Mono",monospace}
+details.feat{margin-top:10px}
+details.feat summary{cursor:pointer;font-weight:600;font-size:13.5px}
+.fit{font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:999px;background:var(--chip);color:var(--muted);margin-left:6px;vertical-align:middle}
+.fit.ok{background:var(--lime-bg);color:var(--lime)}
 .newb{font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 7px;border-radius:999px;background:var(--accent);color:var(--accent-ink);margin-left:6px;vertical-align:middle;animation:pulse 2s infinite}
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(120%);background:var(--panel-solid);border:1px solid var(--accent);color:var(--ink);padding:12px 16px;border-radius:14px;box-shadow:var(--shadow),var(--glow);z-index:50;display:flex;gap:12px;align-items:center;transition:transform .35s;max-width:calc(100vw - 32px);font-size:14px}
 .toast.show{transform:translateX(-50%) translateY(0)}
@@ -252,6 +263,7 @@ table.track{min-width:980px}
       <button data-f="utility">Says utility</button>
       <button data-f="whale">Whale buys</button>
       <button data-f="unseen" id="unseenbtn">New since my last visit</button>
+      <button data-f="learned" id="learnedbtn" title="Only coins that fit the stacked least-bad rules from the What worked panel">Fits the learned rules</button>
     </div>
     <div class="summary" id="summary"></div>
     <div class="grid" id="grid"></div>
@@ -278,6 +290,9 @@ table.track{min-width:980px}
       <button id="clearbtn" type="button">Clear all</button>
       <span class="tsub" id="trackstatus"></span>
     </div>
+    <h2>What worked</h2>
+    <div class="panel" id="learned"><p class="tsub">Fills in from the GitHub run (data/insights.json).</p></div>
+    <p class="tsub">Plain statistics on the closed buy-now trades, re-run with every GitHub scan. Each number saved at scan time is split into three groups (low, mid, high); yes/no flags into on and off. A group counts only with 30+ trades and only if it beats the rest in both the older and the newer half of the data. "Makes money" means the group itself ended positive in both halves. Under about 300 trades, treat every line as a hint, not a rule.</p>
     <h2>Which rule works?</h2>
     <div class="twrap"><table class="baskets" id="baskets"></table></div>
     <p class="tsub">The paper test copies the real Jupiter orders on each card. Every coin that passes gets two paper trades of $250 ($100 for Movers, $50 for Small pools). <b>Buy now</b> buys at the scan price. <b>Limit at support</b> places the card's limit buy at support and fills only if the price comes down to it within 12 hours. Both then hold three orders with the card's stop-loss: 50% sells at 2x, 40% at 3x, and the last 10% rides a 40% trailing stop. Costs of 3% are taken off. The first rows compare the two strategies. The other rows slice the buy-now trades by rule.</p>
@@ -854,7 +869,7 @@ function cardHtml(c, srcKey) {
       <p>${c.desc ? esc(c.desc) : "<i>The creator wrote no description.</i>"}</p></div>`;
   return `<article class="card ${c.verdict === "PASS" ? "v-pass" : "v-warn"}">
     <div class="top">${img}
-      <div class="title"><div class="sym">${esc(c.symbol)}${newTokens.has(c.token) ? `<span class="newb">NEW</span>` : ""}</div><div class="name">${esc(c.name)}</div></div>
+      <div class="title"><div class="sym">${esc(c.symbol)}${newTokens.has(c.token) ? `<span class="newb">NEW</span>` : ""}${fitTag({...c, sourceKey: srcKey})}</div><div class="name">${esc(c.name)}</div></div>
       <div class="badges">${verdict}${chain}${fastBadge}</div>
     </div>
     ${about}
@@ -878,6 +893,84 @@ function cardHtml(c, srcKey) {
     </div>
   </article>`;
 }
+// ---------- what worked: learned rules (data/insights.json, written by scanner/learn.py) ----------
+let insights = null;
+const dayUtc = () => new Date().getUTCDay();
+// Same keys as METRICS in learn.py. For a scan card (live numbers) and for a logged trade (its snapshot).
+function metricOfCard(c, key) {
+  const f = c.features || {}, b = c.big || {}, ch = c.chartF || {};
+  const map = {
+    age_h: c.age_h, firstSeenAgeH: f.firstSeenAgeH ?? c.firstSeenAgeH ?? null, mc: c.mc, liq: c.liq,
+    liqToMc: c.mc ? c.liq / c.mc * 100 : null, holders: c.holders, buyers24: c.buyers24 ?? null, tradesPerBuyer: c.tpb ?? null,
+    buys24: c.buys24, sells24: c.sells24, volToMc: c.mc ? (c.vol24 || 0) / c.mc : null, chg1: c.chg1, chg6: c.chg6, chg24: c.chg24,
+    gt_score: c.gt_score ?? null, warns: (c.warns || []).length, bigBuyUsd: b.buyUsd ?? null, bigSellUsd: b.sellUsd ?? null,
+    bigNet: b.buyUsd != null ? (b.buyUsd || 0) - (b.sellUsd || 0) : null, bigWallets: b.wallets ?? null, hourUtc: new Date().getUTCHours(),
+    runup6h: ch.runup6h ?? null, runup2h: ch.runup2h ?? null, distSupport: ch.distSupport ?? null, fromHigh6h: ch.fromHigh6h ?? null,
+    swing: ch.swing ?? null, volTrend: ch.volTrend ?? null, higherLows: ch.higherLows ?? null, greenShare: ch.greenShare ?? null,
+    hasX: !!safeUrl(c.x), hasTg: !!safeUrl(c.telegram), hasWeb: !!safeUrl(c.website), whale: !!isWhale(c), boosted: !!(c.boosts),
+    pons: !!c.pons, planOk: !!(c.order && c.order.ok), source: c.sourceKey || null, weekday: (dayUtc() + 6) % 7,
+    label: /utility/i.test(c.label || "") && !/meme/i.test(c.label || "") ? "utility claim" : /meme/i.test(c.label || "") ? "meme" : "none",
+  };
+  return map[key] ?? null;
+}
+function metricOfTrade(e, key) {
+  const f = e.features || {}, ch = f.chart || {};
+  const map = {
+    mc: e.mc0, liq: e.liq0, warns: e.warns, volToMc: f.vol24 != null && e.mc0 ? f.vol24 / e.mc0 : null,
+    bigNet: (f.bigBuyUsd || 0) - (f.bigSellUsd || 0), boosted: !!f.boosts, source: e.source,
+    label: /utility/i.test(e.label || "") && !/meme/i.test(e.label || "") ? "utility claim" : /meme/i.test(e.label || "") ? "meme" : "none",
+  };
+  if (key in map) return map[key];
+  if (key in ch) return ch[key];
+  return f[key] ?? null;
+}
+function ruleOk(v, r) {
+  if (v === null || v === undefined) return false;
+  if ("eq" in r) return v === r.eq;
+  if (r.lo !== null && r.lo !== undefined && v < r.lo) return false;
+  if (r.hi !== null && r.hi !== undefined && v >= r.hi) return false;
+  return true;
+}
+const learnedRules = () => (insights && insights.combo && insights.combo.ruleset) || [];
+const fitsAll = (get, rules) => rules.length > 0 && rules.every(r => ruleOk(get(r.key), r));
+function fitTag(c) {
+  const rules = learnedRules();
+  if (!rules.length) return "";
+  const n = rules.filter(r => ruleOk(metricOfCard(c, r.key), r)).length;
+  return `<span class="fit ${n === rules.length ? "ok" : ""}" title="${esc(rules.map(r => r.key).join(", "))}">fits ${n}/${rules.length} learned</span>`;
+}
+function renderLearned() {
+  const box = $("#learned");
+  if (!insights) { box.innerHTML = `<p class="tsub">No learning file yet. It appears after the next GitHub run.</p>`; return; }
+  const b = insights.base, s = insights.suggestions || [], lb = insights.leastBad || [], co = insights.combo;
+  const p1 = x => x === null || x === undefined ? "-" : (x >= 0 ? "+" : "") + x.toFixed(1) + "%";
+  let h = `<div class="lhead"><span>${esc(insights.what)}: <b>${b.n}</b> trades</span><span>typical result <b class="${b.trimmed >= 0 ? "up" : "down"}">${p1(b.trimmed)}</b> per trade</span><span>win rate <b>${Math.round(b.win)}%</b></span><span>older half <b>${p1(b.older)}</b>, newer half <b>${p1(b.newer)}</b></span><span class="tsub">updated ${ago(insights.updated)}</span></div>`;
+  if (s.length) {
+    h += `<h3 style="margin:14px 0 4px">Rules that made money in both halves</h3><div class="lrn">` + s.map(r =>
+      `<div class="r good"><b>${esc(r.text)}</b>${r.n} trades · ${p1(r.trimmed)} per trade vs ${p1(r.rest)} for the rest · win ${Math.round(r.win)}%<i>older ${p1(r.older)}, newer ${p1(r.newer)}</i></div>`).join("") + `</div>`;
+  } else {
+    h += `<p style="margin:12px 0 4px"><b>Nothing makes money yet.</b> No group of 30+ trades ended positive in both halves. The lines below lose less than the rest, which tells us what to filter, not what to buy.</p>`;
+  }
+  if (lb.length) {
+    h += `<h3 style="margin:14px 0 4px">Loses less than the rest (both halves)</h3><div class="lrn">` + lb.map(r =>
+      `<div class="r${r.solid ? " good" : ""}"><b>${esc(r.text)}</b>${r.n} trades · ${p1(r.trimmed)} vs ${p1(r.rest)} for the rest · win ${Math.round(r.win)}%<i>older ${p1(r.older)}, newer ${p1(r.newer)}</i></div>`).join("") + `</div>`;
+  }
+  if (co) {
+    h += `<h3 style="margin:14px 0 4px">Stacked: the least-bad rules together</h3><div class="r" style="background:var(--chip);border-radius:12px;padding:10px 12px;font-size:13px">${co.rules.map(esc).join(" <b>+</b> ")}<br><span class="tsub">${co.n} trades · ${p1(co.trimmed)} per trade vs ${p1(co.restTrimmed)} for the rest · older ${p1(co.older)}, newer ${p1(co.newer)} · ${co.solid ? "<b class='up'>makes money in both halves</b>" : "<b class='down'>still loses</b>"}. The scan page has a "Fits the learned rules" filter built from this stack.</span></div>`;
+  }
+  h += `<details class="feat"><summary>Every number, all groups (${(insights.features || []).length})</summary><div class="twrap" style="margin-top:8px"><table class="baskets"><tr><th>Number</th><th>Group</th><th class="num">Trades</th><th class="num">Per trade</th><th class="num">Rest</th><th class="num">Win</th><th class="num">Older</th><th class="num">Newer</th><th>Verdict</th></tr>` +
+    (insights.features || []).map(f => f.buckets.map(bk => `<tr><td>${esc(f.label)}</td><td>${esc(bk.name)}</td><td class="num">${bk.n}</td><td class="num ${bk.trimmed >= 0 ? "o-win" : "o-loss"}">${p1(bk.trimmed)}</td><td class="num">${p1(bk.restTrimmed)}</td><td class="num">${bk.win == null ? "-" : Math.round(bk.win) + "%"}</td><td class="num">${p1(bk.older)}</td><td class="num">${p1(bk.newer)}</td><td>${bk.solid ? "<b class='up'>makes money</b>" : bk.helps ? "loses less" : bk.gap != null && bk.gap < -3 ? "<span class='down'>worse</span>" : "-"}</td></tr>`).join("")).join("") +
+    `</table></div></details>`;
+  box.innerHTML = h;
+  const btn = $("#learnedbtn");
+  if (btn) btn.textContent = learnedRules().length ? `Fits the learned rules (${learnedRules().length})` : "Fits the learned rules (none yet)";
+}
+async function loadInsights() {
+  if (location.protocol === "file:") return;
+  try { insights = await getJSON("data/insights.json?t=" + Math.floor(Date.now() / 120000)); renderLearned(); if (data) render(); }
+  catch (e) { /* no file yet */ }
+}
+
 // ---------- "new since my last visit" ----------
 // Remembers, in this browser, which coins were on screen. A visit ends when the tab is hidden for 30+ minutes or closed.
 let seenStore = {}, seenBefore = new Set(), hiddenAt = null;
@@ -927,10 +1020,11 @@ function render() {
     </div>`).join("");
   let cards = [];
   r.sources.forEach(s => s.passed.forEach(c => cards.push([c, s.key])));
-  cards = cards.filter(([c, k]) => filter === "all" || filter === k ||
+  cards = cards.filter(([c, sk]) => filter === "all" || filter === sk ||
     (filter === "clean" && c.verdict === "PASS") || (filter === "social" && (safeUrl(c.x) || safeUrl(c.telegram))) ||
     (filter === "utility" && /utility/.test(c.label || "")) || (filter === "whale" && isWhale(c)) ||
-    (filter === "unseen" && !seenBefore.has(c.token)));
+    (filter === "unseen" && !seenBefore.has(c.token)) ||
+    (filter === "learned" && fitsAll(k => metricOfCard({...c, sourceKey: sk}, k), learnedRules())));
   markSeen(r);
   $("#grid").innerHTML = cards.length ? cards.map(([c, k], i) => cardHtml(c, k).replace('<article class="card', `<article style="animation-delay:${i * 60}ms" class="card`)).join("")
     : `<div class="empty">${r.finished ? "No coins match this filter." : "Coins will show here as each source finishes."}</div>`;
@@ -1240,6 +1334,7 @@ const BASKETS = [
   ["Paid DexScreener boost", e => nowOnly(e) && ((e.features || {}).boosts || 0) > 0],
   ["No paid boost", e => nowOnly(e) && isV2(e) && !((e.features || {}).boosts)],
   ["Pons launch (Robinhood)", e => nowOnly(e) && !!(e.features || {}).pons],
+  ["Fits the learned rules (stacked)", e => nowOnly(e) && isV2(e) && fitsAll(k => metricOfTrade(e, k), learnedRules())],
 ];
 function portfolio(all) {
   const es = all.filter(entered);
@@ -1336,7 +1431,7 @@ function renderTrack() {
   renderBooks();
   const es = mine().sort((a, b) => Date.parse(b.logged) - Date.parse(a.logged));
   renderControl(es);
-  updateTrackCount(); renderPaper();
+  updateTrackCount(); renderPaper(); renderLearned();
   const p = portfolio(es);
   countUp($("#heroValue"), p.value, v => money(v));
   $("#heroPl").innerHTML = es.length ? `<span class="${p.pnl >= 0 ? "up" : "down"}">${signed(p.pnl)} (${pctTxt(p.pct)})</span> <span class="tsub">on ${money(p.invested)} put in</span>` : "Every coin that passes a scan becomes a paper trade. The hourly scan on GitHub fills this by itself.";
@@ -1435,7 +1530,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-09a";
+const VERSION = "2026-10-13a";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {
@@ -1564,8 +1659,8 @@ async function loadAuto() {
       + (fast && fast.finished ? `Fast scan (VPS, every 2 minutes): last check ${ago(fast.finished)}.` : "Fast scan (VPS): no data yet.");
   } catch (e) { /* no automatic scan yet */ }
 }
-loadAuto().then(refreshPrices);
-setInterval(() => loadAuto().then(refreshPrices), 2 * 60 * 1000);
+loadAuto().then(refreshPrices); loadInsights();
+setInterval(() => { loadAuto().then(refreshPrices); loadInsights(); }, 2 * 60 * 1000);
 checkVersion(); setInterval(checkVersion, 10 * 60 * 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { document.title = "Flip Scanner"; loadAuto().then(refreshPrices); } });
 </script>

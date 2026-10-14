@@ -47,6 +47,15 @@ BOOKS = {
     "trail_pool": dict(label="v2 Trail, big pool", take="pool20nf", entry="market", legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}],
                        stop=0.90, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
                        desc="Pool $20K+ and not falling in the last hour. Market buy. Stop 10%. Once up 20%, a 15% trailing stop takes over. Out after 1 hour."),
+    # ---- Stop-slippage twins (Rainer, Oct 15 2026). Each copies every "v2 Tight trail" trade exactly (same coin, same buy, same stop and
+    # trail) and only changes how badly a stop sale fills: 15% and 20% worse than the stop price instead of 10%. Same trades, so the
+    # gap between the three rows is purely the fill quality. They start with the whole Tight trail history re-priced (backfill_mirrors).
+    "trail_tight_s15": dict(label="v2 Tight trail, stops fill 15% worse", mirror="trail_tight", slip=0.15, take="mirror", entry="market",
+                            legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
+                            desc="Twin of v2 Tight trail: the same trades, but every stop or trailing-stop sale fills 15% worse than its price (Tight trail assumes 10%)."),
+    "trail_tight_s20": dict(label="v2 Tight trail, stops fill 20% worse", mirror="trail_tight", slip=0.20, take="mirror", entry="market",
+                            legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
+                            desc="Twin of v2 Tight trail: the same trades, but every stop or trailing-stop sale fills 20% worse than its price (Jupiter's default stop slippage is up to 20%)."),
     "be_2x": dict(label="v2 2x with break-even", take="pool20nf", entry="market", legs=[{"part": 1.0, "tp": 2.0}], be=1.3,
                   stop=0.85, timeH=4, size=50, maxOpen=10, dayLoss=150, v2=True,
                   desc="Pool $20K+ and not falling in the last hour. Market buy. Stop 15%, moved up to the buy price once up 30%. Sell all at 2x. Out after 4 hours."),
@@ -123,18 +132,25 @@ def consider(books, cards):
     opened = 0
     for name, b in BOOKS.items():
         cfg[name] = dict(label=b["label"], desc=b["desc"], size=b["size"], maxOpen=b["maxOpen"], dayLoss=b["dayLoss"],
-                         skipped=cfg.get(name, {}).get("skipped", {}))
+                         skipped=cfg.get(name, {}).get("skipped", {}), mirror=b.get("mirror"), slip=b.get("slip"))
         for c, src in cards:
             key = f"{name}:{c['token']}"
-            if key in trades or not c.get("price") or not takes(b, c, src):
+            mirror = trades.get(f"{b['mirror']}:{c['token']}") if b.get("mirror") else None
+            if key in trades or not c.get("price"):
                 continue
-            open_n = sum(1 for e in trades.values() if e["book"] == name and not e.get("final"))
-            if open_n >= b["maxOpen"]:
-                cfg[name]["skipped"]["max open"] = cfg[name]["skipped"].get("max open", 0) + 1
+            if b.get("mirror"):
+                if not mirror:
+                    continue  # a twin buys exactly what its source playbook bought, nothing else
+            elif not takes(b, c, src):
                 continue
-            if realized_today(trades, name) <= -b["dayLoss"]:
-                cfg[name]["skipped"]["daily loss limit"] = cfg[name]["skipped"].get("daily loss limit", 0) + 1
-                continue
+            if not b.get("mirror"):
+                open_n = sum(1 for e in trades.values() if e["book"] == name and not e.get("final"))
+                if open_n >= b["maxOpen"]:
+                    cfg[name]["skipped"]["max open"] = cfg[name]["skipped"].get("max open", 0) + 1
+                    continue
+                if realized_today(trades, name) <= -b["dayLoss"]:
+                    cfg[name]["skipped"]["daily loss limit"] = cfg[name]["skipped"].get("daily loss limit", 0) + 1
+                    continue
             o = c.get("order") or {}
             legs = b["legs"]
             if b.get("legsFn") == "to90":  # sell where the curve is 90% full: a fixed price target, known at the buy
@@ -143,17 +159,45 @@ def consider(books, cards):
                      chart=c.get("chart"), logged=now_iso(), size=b["size"], price0=c["price"], liq0=c["liq"], mc0=c["mc"],
                      legs=legs, timeH=b["timeH"], stopRule=b["stop"], orderStop=o.get("stop") if o.get("ok") else None,
                      be=b.get("be"), candle=60 if b.get("v2") and b["timeH"] <= 2 else 900,  # old playbooks keep 15-minute candles
+                     slip=b.get("slip"), mirror=b.get("mirror"),
                      entry=None, entryT=None, limit=None, stop0=None, now=None, liq=None, cash=0.0, pos=1.0, best=None, exit=None,
                      final=False, checked=None, outcome="Open", why="",
                      features=dict(firstSeenAgeH=c.get("firstSeenAgeH"), planOk=o.get("ok"), warns=len(c.get("warns") or []),
                                    chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h"), curveProgress=c.get("curveProgress")))
             if b["entry"] == "limit":
                 e.update(limit=o["entry"], outcome="Waiting for fill", why=f"limit buy at {S.money(o['entry'])}")
+            elif mirror and mirror.get("entry"):
+                fill(e, mirror["entry"], mirror["entryT"])  # the same buy, to the cent
             else:
                 fill(e, c["price"], time.time())
             trades[key] = e
             opened += 1
     return opened
+
+
+def backfill_mirrors(books):
+    """Create the twin of every source trade that has none yet, so a new twin book starts with the whole history.
+    Exact for single-leg trail books: only a stop or trailing-stop sale (outcome "Stop hit" or "All targets hit") has slippage in
+    its cash; every other exit (time stop, dead, bad data) has none. So re-pricing = swap the 10% for the twin's slippage.
+    Open source trades are copied as open and get simulated going forward with the twin's slippage."""
+    trades = books.setdefault("trades", {})
+    added = 0
+    for name, b in BOOKS.items():
+        src = b.get("mirror")
+        if not src:
+            continue
+        for key, e in list(trades.items()):
+            if e.get("book") != src:
+                continue
+            twin_key = f"{name}:{e['token']}"
+            if twin_key in trades:
+                continue
+            t = dict(e, book=name, slip=b["slip"], mirror=src, backfilled=True)
+            if e.get("final") and e.get("entry") and e.get("outcome") in ("Stop hit", "All targets hit"):
+                t["cash"] = e["cash"] * (1 - b["slip"]) / (1 - S.SLIP)
+            trades[twin_key] = t
+            added += 1
+    return added
 
 
 def fill(e, price, t):
@@ -164,7 +208,7 @@ def fill(e, price, t):
 
 
 def simulate(e, candles):
-    r = S.run_legs(candles, e["entry"], e["entryT"], e["stop0"], e["legs"], e["timeH"] * 3600, size=e.get("candle", 900), be=e.get("be"))
+    r = S.run_legs(candles, e["entry"], e["entryT"], e["stop0"], e["legs"], e["timeH"] * 3600, size=e.get("candle", 900), be=e.get("be"), slip=e.get("slip"))
     st = r["st"]
     hits = sum(1 for s in st if s == "tp")
     if all(s == "open" for s in st):

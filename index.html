@@ -299,10 +299,13 @@ table.track{min-width:980px}
     <h2>What-if exits</h2>
     <div class="twrap"><table class="baskets" id="whatif"></table></div>
     <p class="tsub">The same trades (both strategies, since Oct 6) replayed with other ways to sell. It shows which exit plan would have made the most, before you change the real orders. Stops fill 10% worse than their price, like a fast crash. Open trades count at today's price. Under about 30 trades the numbers mean little.</p>
-    <h2>Playbooks: 16 bot setups, side by side (5 adjusted "v2" since Oct 9)</h2>
+    <h2>Playbooks: bot setups side by side (5 adjusted "v2" since Oct 9, plus 2 stop-fill twins)</h2>
     <div class="bookgrid" id="bookcards"></div>
     <div class="twrap"><table class="baskets" id="books"></table></div>
     <p class="tsub" id="booksnote">Each playbook is a complete bot setup the real bot can copy 1:1 with Jupiter: which passes it takes, market or limit buy, the exact sell orders, a time stop, bet size, max open coins and a daily loss limit. All of them paper trade the same coins from the VPS fast scan (since Oct 6, 2026). Costs of 3% are taken off. Open trades count at today's price. A playbook earns trust only when it is green in both the older and the newer half of its trades, and under about 30 closed trades the numbers mean little.</p>
+    <h3 style="margin:18px 0 6px">How fragile is the profit? Same trades, different stop fills</h3>
+    <div class="twrap"><table class="baskets" id="fragile"></table></div>
+    <p class="tsub" id="fragilenote"></p>
     <h2>Control group: did the filters throw away winners?</h2>
     <div class="twrap"><table class="baskets" id="control"></table></div>
     <p class="tsub">Each GitHub run also follows up to 10 coins the filters rejected, as paper "buy now" trades with the card plan. They never count in your portfolio. If a reject reason keeps doing better than the passed coins, that filter is too strict. Under about 20 coins per row the numbers mean little.</p>
@@ -1530,7 +1533,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-13a";
+const VERSION = "2026-10-15a";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {
@@ -1581,6 +1584,45 @@ function bookCurve(trades, id) {
     <path d="${d} L300 72 L0 72 Z" fill="url(#bg-${id})"/><path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>
     <circle cx="300" cy="${Y(last).toFixed(1)}" r="3.5" fill="${color}"/></svg>`;
 }
+// Stop-fill test: "v2 Tight trail" and its two twin books buy exactly the same coins at the same prices. Only the fill of a stop
+// or trailing-stop sale differs (10%, 15%, 20% worse than the stop price). The 5% row is re-priced from the same trades.
+function renderFragile(all) {
+  const el = $("#fragile"), note = $("#fragilenote");
+  if (!el || !books || !books.books || !books.books.trail_tight_s15) { if (el) el.innerHTML = ""; if (note) note.textContent = ""; return; }
+  const m = e => e.entry ? e.cash + e.pos * ((e.now ?? e.entry) / e.entry) : null;
+  const net = e => m(e) * (1 - COST) - 1;
+  const src = all.filter(e => e.book === "trail_tight" && e.entry);
+  const repriced = slip => src.map(e => e.final && (e.outcome === "Stop hit" || e.outcome === "All targets hit") ? {...e, cash: e.cash * (1 - slip) / (1 - 0.10)} : e);
+  const sets = [
+    {slip: 0.05, label: "5% worse", kind: "re-priced from the same trades", ts: repriced(0.05)},
+    {slip: 0.10, label: "10% worse", kind: "live book: v2 Tight trail", ts: src},
+    {slip: 0.15, label: "15% worse", kind: "live book: twin", ts: all.filter(e => e.book === "trail_tight_s15" && e.entry)},
+    {slip: 0.20, label: "20% worse", kind: "live book: twin", ts: all.filter(e => e.book === "trail_tight_s20" && e.entry)},
+  ];
+  const avg = xs => xs.length ? xs.reduce((a, c) => a + c, 0) / xs.length : null;
+  const pct = x => x === null ? "-" : `<span class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%</span>`;
+  const usd = x => `<b class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : "-"}$${Math.abs(x).toFixed(0)}</b>`;
+  const rows = sets.map(r => {
+    const closed = r.ts.filter(e => e.final && e.outcome !== "Bad data");
+    const nets = closed.map(e => e.size * net(e)).sort((a, b) => b - a);
+    const total = r.ts.reduce((n, e) => n + e.size * net(e), 0);
+    const sorted = closed.slice().sort((a, b) => Date.parse(a.logged) - Date.parse(b.logged)), h = Math.floor(sorted.length / 2);
+    return {...r, total, closed: closed.length, won: closed.length ? closed.filter(e => net(e) > 0).length / closed.length : null,
+      avgN: avg(closed.map(net)), older: avg(sorted.slice(0, h).map(net)), newer: avg(sorted.slice(h).map(net)),
+      noBest2: nets.slice(2).reduce((a, c) => a + c, 0)};
+  });
+  el.innerHTML = `<tr><th>Stops fill</th><th>Where it comes from</th><th class="num">Closed</th><th class="num">Won</th><th class="num">Average per trade</th><th class="num">Net $</th><th class="num">Net $ without the best 2</th><th class="num">Older half</th><th class="num">Newer half</th></tr>` +
+    rows.map(r => `<tr><td><b>${r.label}</b></td><td class="tsub">${r.kind}</td><td class="num">${r.closed}</td><td class="num">${r.won === null ? "-" : Math.round(r.won * 100) + "%"}</td>
+      <td class="num">${pct(r.avgN)}</td><td class="num">${usd(r.total)}</td><td class="num">${usd(r.noBest2)}</td><td class="num">${pct(r.older)}</td><td class="num">${pct(r.newer)}</td></tr>`).join("");
+  let cross = null;
+  for (let i = 0; i < rows.length - 1; i++) if (rows[i].total > 0 && rows[i + 1].total <= 0) {
+    cross = rows[i].slip + rows[i].total / (rows[i].total - rows[i + 1].total) * (rows[i + 1].slip - rows[i].slip); break;
+  }
+  const verdict = rows[0].total <= 0 ? "The profit is already gone at 5% worse stop fills."
+    : cross !== null ? `<b>The profit disappears at about ${(cross * 100).toFixed(0)}% worse stop fills.</b>`
+    : "The profit survives even 20% worse stop fills.";
+  note.innerHTML = `${verdict} All rows buy the exact same coins at the same prices. Only how badly a stop or trailing-stop sale fills changes. A real fill depends on the pool and on how fast the price falls, and Jupiter's default stop slippage allows up to 20%. Only real small trades can show which row is true.`;
+}
 function renderBooks() {
   const el = $("#books");
   if (!el) return;
@@ -1604,6 +1646,7 @@ function renderBooks() {
     const sk = Object.entries(b.skipped || {}).map(([k, n]) => `${n} skipped (${k})`).join(", ");
     return {key, b, n: entered.length, waiting, open, closed: closed.length, missed, won, avgN: avg(closed.map(net)), usd, worst, older, newer, sk};
   }).sort((a, b) => b.usd - a.usd);
+  renderFragile(all);
   const cards = $("#bookcards");
   if (cards) cards.innerHTML = rows.map(r => {
     const ts = all.filter(e => e.book === r.key);

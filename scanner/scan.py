@@ -869,13 +869,15 @@ def watch_fill(e, candles):
 SLIP = 0.10  # stops fill 10% worse than the stop price, like a real fast crash (Jupiter stops use up to 20% slippage)
 
 
-def run_legs(candles, entry, t_in, stop, legs, time_stop_s, size=900, be=None):
+def run_legs(candles, entry, t_in, stop, legs, time_stop_s, size=900, be=None, slip=None):
     """Replay separate sell orders after a fill. Each leg: part of the bag, a take-profit multiple, or a trailing %.
     Legs without a trail use the shared stop. Inside one candle a stop counts before a target.
     The candle the buy sits in is skipped for exits: its low and high may come from before the buy
     (Oct 6 2026: 20 of 49 trades were "stopped" by a low that happened before the paper buy)."""
     # size: candle length in seconds (900 = 15 minutes, 60 = 1 minute). be: once the price reaches be x entry, the stop
     # moves up to the entry price (break-even). A trail leg with "act" only starts trailing once the peak reaches act x.
+    # slip: how much worse than the stop or trail price a stop sale fills. None = SLIP (10%). The stop-slippage twin books use 15% and 20%.
+    sl = SLIP if slip is None else slip
     st, cash, best, peak, first, t_tp, exit_t, last = ["open"] * len(legs), 0.0, 1.0, entry, True, None, None, entry
     for t, o, h, l, c, v in sorted(x for x in candles if x[0] >= t_in - (size - 1)):
         last = c
@@ -889,10 +891,10 @@ def run_legs(candles, entry, t_in, stop, legs, time_stop_s, size=900, be=None):
             if lg.get("trail") and peak >= entry * lg.get("act", 1.0):
                 lvl = peak * (1 - lg["trail"])
                 if l <= lvl:
-                    cash, st[i] = cash + lg["part"] * lvl * (1 - SLIP) / entry, "trail"
+                    cash, st[i] = cash + lg["part"] * lvl * (1 - sl) / entry, "trail"
                     continue
             elif stop and l <= stop:
-                cash, st[i] = cash + lg["part"] * stop * (1 - SLIP) / entry, "stop"
+                cash, st[i] = cash + lg["part"] * stop * (1 - sl) / entry, "stop"
                 continue
             if lg.get("tp") and h >= lg["tp"] * entry:
                 cash, st[i] = cash + lg["part"] * lg["tp"], "tp"

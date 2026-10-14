@@ -296,6 +296,7 @@ def cycle(state, track, fast, books, out):
     big_rej = {r["token"]: r for s in res["sources"] if s["key"] not in ("survivors", "curve") for r in s["rejected"] if r["reason"].startswith("market cap over")}
     big_cards = big_lane(list(big_rej.values()), seen, now)
     res["finished"] = now_iso()
+    PB.backfill_mirrors(books)  # twin books (stop-slippage test) start with the whole history of their source book
     opened = PB.consider(books, [(c, s["key"]) for s in res["sources"] for c in s["passed"]] + [(c, "big") for c in big_cards if S.is_pass(c)])
     res_main = dict(res, sources=[s for s in res["sources"] if s["key"] != "curve"])  # curve coins: playbooks only, the card plan makes no sense there
     added = S.log_passed(track, res_main)

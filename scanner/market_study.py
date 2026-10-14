@@ -69,7 +69,7 @@ def load_trades():
         b = json.load(fh)
     labels = {k: v["label"] for k, v in b["books"].items()}
     for e in b["trades"].values():
-        if e.get("entry") and e.get("final"):
+        if e.get("entry") and e.get("final") and not e.get("mirror"):  # twin books copy another book's trades: count once
             out.append(dict(group="playbook", book=e["book"], label=labels.get(e["book"], e["book"]), symbol=e["symbol"],
                             t_in=e["entryT"], t_out=e.get("exit") or e["entryT"], size=e["size"],
                             net=e["size"] * (mult(e) * (1 - COST) - 1)))

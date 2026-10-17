@@ -190,6 +190,7 @@ def meta_scan(state):
         time.sleep(S.PAUSE)
     m["coins"] = {k: v for k, v in m["coins"].items() if v["c"] > now - META_KEEP_S}
     m["done"] = {k: v for k, v in m["done"].items() if v > now - META_KEEP_S}
+    m.setdefault("tries", {})
     groups = {}
     for mint, v in m["coins"].items():
         if v["k"]:
@@ -207,6 +208,7 @@ def meta_scan(state):
         first_t, first_mint = items[0]
         bursts[k] = dict(key=k, name=m["coins"][first_mint]["n"] or m["coins"][first_mint]["s"], count=len(items), creators=len(creators),
                          firstAt=first_t, firstMint=first_mint, mints=[mint for _, mint in items])
+    m["tries"] = {k: v for k, v in m["tries"].items() if k in bursts}
     return bursts
 
 
@@ -220,12 +222,14 @@ def meta_lane(state, now):
     m = state["meta"]
     cards, taken = [], 0
     for k, b in sorted(bursts.items(), key=lambda kv: (-kv[1]["count"], -kv[1]["firstAt"])):
-        if k in m["done"] or time.time() - b["firstAt"] > META_MAX_FIRST_AGE_S:
+        # DexScreener lists a new coin 1-3 minutes after its first trade, so a burst gets up to 4 cycles to produce a card
+        if k in m["done"] or m["tries"].get(k, 0) >= 4 or time.time() - b["firstAt"] > META_MAX_FIRST_AGE_S:
             continue
         if taken >= META_MAX_PER_CYCLE:
             break
         taken += 1
-        m["done"][k] = now
+        m["tries"][k] = m["tries"].get(k, 0) + 1
+        made = 0
         S.say(f"meta burst: \"{b['name']}\" x{b['count']} by {b['creators']} creators, first {max(0, (time.time() - b['firstAt']) / 60):.0f} min ago")
         coins = {mint: m["coins"][mint] for mint in b["mints"][:30]}
         traction = {}
@@ -254,6 +258,7 @@ def meta_lane(state, now):
             try:
                 p = (t.get("pair") if t.get("pair") and t["pair"].get("priceUsd") else None) or S.find_pair(mint, "solana")
                 if not p:
+                    S.say(f"meta {k_['symbol']}: not on DexScreener yet, skipped")
                     continue
                 if p.get("dexId") == "pumpfun":  # still on the curve: real SOL in the curve stands in for the pool
                     native, usd = S.num(p.get("priceNative")), S.num(p.get("priceUsd"))
@@ -293,6 +298,9 @@ def meta_lane(state, now):
                     c["verdict"] = "PASS WITH WARNINGS"
                 time.sleep(S.PAUSE)
             cards.append(c)
+            made += 1
+        if made:
+            m["done"][k] = now
     return cards, len(bursts)
 
 

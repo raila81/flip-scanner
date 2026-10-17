@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -138,6 +139,156 @@ def check_curve(k, info):
         c["warns"].insert(0, f"Still on the pump.fun curve, {pct}% full: {S.curve_ratio(info['progress'], 1.0):.1f}x to graduation "
                              f"(about 411 SOL market cap). No pool yet, Jupiter limit orders may not work here")
     return c
+
+
+# ---------- meta bursts (Rainer, Oct 17 2026) ----------
+# When a famous tweet lands, bots create 5-30 coins with the same name within minutes. That burst on pump.fun's own
+# newest-coins list IS the signal (no X feed needed, and it shows 1-3 minutes after the tweet). Each cycle reads the
+# newest 100 coins, keeps 3 hours of them, groups by name and reports a burst when 4+ coins by 3+ creators share a
+# new name within 15 minutes. Two coins get a card: the first one created and the one with the most buyers so far.
+# Two playbooks trade them ("Meta burst: first coin" / "...: most buyers"); they never enter the main portfolio.
+# A dry run on Oct 17 found about 6 bursts of 3+ per 7 minutes (bots copy any coin that gets early buys), so the bar is 4 copies
+# by 3 creators and at most 2 new bursts per cycle (biggest first), or the lane would eat the whole cycle in API calls.
+META_WINDOW_S, META_MIN_COPIES, META_MIN_CREATORS, META_MAX_PER_CYCLE = 15 * 60, 4, 3, 2
+META_KEEP_S, META_MAX_FIRST_AGE_S, META_PAGES = 3 * 3600, 90 * 60, 2
+META_STOP = {"test", "pump", "pumpfun", "sol", "solana", "coin", "token", "meme", "ai", "cat", "dog", "moon", "pepe", "doge",
+             "bonk", "wif", "trump", "elon", "baby", "mini", "chad", "inu", "shib", "shiba", "usdc", "btc", "eth", "fun", "gm",
+             "lol", "wtf", "xxx", "sex", "porn", "nsfw", "new", "the", "of", "to", "and", "on", "in", "for", "with", "my", "your"}
+
+
+def meta_key(name, sym):
+    """One key per idea: lower case, no $ or punctuation, common fillers dropped. Empty when too generic to mean anything."""
+    def norm(x):
+        x = re.sub(r"[^a-z0-9 ]", " ", (x or "").lower().replace("$", ""))
+        words = [w for w in x.split() if w not in META_STOP]
+        return "".join(words)
+    k = norm(name)
+    if len(k) < 3 or k.isdigit():
+        k = norm(sym)
+    return k if len(k) >= 3 and not k.isdigit() else ""
+
+
+def meta_scan(state):
+    """Reads pump.fun's newest coins, keeps 3 hours of them in state["meta"]["coins"], returns the current bursts."""
+    m = state.setdefault("meta", {"coins": {}, "done": {}})
+    now = time.time()
+    for page in range(1, META_PAGES + 1):
+        try:
+            d = S.get_slow(f"{S.PF}/coins?offset={(page - 1) * 50}&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false")
+        except Exception as e:
+            S.say(f"meta list page {page} failed ({e})")
+            break
+        for c in d if isinstance(d, list) else []:
+            if not c.get("mint") or not c.get("created_timestamp"):
+                continue
+            m["coins"].setdefault(c["mint"], dict(n=c.get("name") or "", s=c.get("symbol") or "", c=c["created_timestamp"] / 1000,
+                                                  cr=c.get("creator") or "", bc=c.get("bonding_curve") or "", k=meta_key(c.get("name"), c.get("symbol"))))
+            coin = m["coins"][c["mint"]]
+            coin["done"] = bool(c.get("complete"))
+            coin["pool"] = c.get("pump_swap_pool") or c.get("pool_address") or ""
+            coin["rs"] = (c.get("real_sol_reserves") or 0) / 1e9  # real SOL in the curve = the "pool money" of a curve coin
+        time.sleep(S.PAUSE)
+    m["coins"] = {k: v for k, v in m["coins"].items() if v["c"] > now - META_KEEP_S}
+    m["done"] = {k: v for k, v in m["done"].items() if v > now - META_KEEP_S}
+    groups = {}
+    for mint, v in m["coins"].items():
+        if v["k"]:
+            groups.setdefault(v["k"], []).append((v["c"], mint))
+    bursts = {}
+    for k, items in groups.items():
+        items.sort()
+        if len(items) < META_MIN_COPIES:
+            continue
+        # 3+ copies inside one 15-minute window
+        ok = any(items[i + META_MIN_COPIES - 1][0] - items[i][0] <= META_WINDOW_S for i in range(len(items) - META_MIN_COPIES + 1))
+        creators = {m["coins"][mint]["cr"] for _, mint in items}
+        if not ok or len(creators) < META_MIN_CREATORS:
+            continue
+        first_t, first_mint = items[0]
+        bursts[k] = dict(key=k, name=m["coins"][first_mint]["n"] or m["coins"][first_mint]["s"], count=len(items), creators=len(creators),
+                         firstAt=first_t, firstMint=first_mint, mints=[mint for _, mint in items])
+    return bursts
+
+
+def meta_lane(state, now):
+    """Cards for new bursts: the first coin created and the coin with the most buyers (one card when they are the same)."""
+    try:
+        bursts = meta_scan(state)
+    except Exception as e:
+        S.say(f"meta scan failed ({e})")
+        return [], 0
+    m = state["meta"]
+    cards, taken = [], 0
+    for k, b in sorted(bursts.items(), key=lambda kv: (-kv[1]["count"], -kv[1]["firstAt"])):
+        if k in m["done"] or time.time() - b["firstAt"] > META_MAX_FIRST_AGE_S:
+            continue
+        if taken >= META_MAX_PER_CYCLE:
+            break
+        taken += 1
+        m["done"][k] = now
+        S.say(f"meta burst: \"{b['name']}\" x{b['count']} by {b['creators']} creators, first {max(0, (time.time() - b['firstAt']) / 60):.0f} min ago")
+        coins = {mint: m["coins"][mint] for mint in b["mints"][:30]}
+        traction = {}
+        try:
+            time.sleep(S.PAUSE)
+            for p in S.get_slow(f"https://api.dexscreener.com/tokens/v1/solana/{','.join(coins)}") or []:
+                mint = (p.get("baseToken") or {}).get("address")
+                if mint not in coins:
+                    continue
+                tx1 = (p.get("txns") or {}).get("h1") or {}
+                tx24 = (p.get("txns") or {}).get("h24") or {}
+                cur = traction.get(mint)
+                if cur and cur["liq"] >= ((p.get("liquidity") or {}).get("usd") or 0):
+                    continue  # keep the deepest pair per coin
+                traction[mint] = dict(buys=tx1.get("buys") or 0, buys24=tx24.get("buys") or 0, vol24=S.num((p.get("volume") or {}).get("h24")),
+                                      liq=(p.get("liquidity") or {}).get("usd") or 0, pair=p)
+        except Exception as e:
+            S.say(f"meta traction lookup failed ({e})")
+        leader = max(traction, key=lambda x: traction[x]["buys"]) if traction else b["firstMint"]
+        picks = [b["firstMint"]] + ([leader] if leader != b["firstMint"] else [])
+        for mint in picks:
+            v, t = coins.get(mint) or m["coins"].get(mint) or {}, traction.get(mint) or {}
+            t_now = time.time()
+            k_ = dict(token=mint, symbol=v.get("s") or "?", liq=t.get("liq") or 0, vol24=t.get("vol24") or 0, ageH=(t_now - v.get("c", t_now)) / 3600,
+                      tpb=None, buyers24=0)
+            try:
+                p = (t.get("pair") if t.get("pair") and t["pair"].get("priceUsd") else None) or S.find_pair(mint, "solana")
+                if not p:
+                    continue
+                if p.get("dexId") == "pumpfun":  # still on the curve: real SOL in the curve stands in for the pool
+                    native = S.num(p.get("priceNative"))
+                    sol_usd = S.num(p.get("priceUsd")) / native if native else 0
+                    t["liq"] = round((v.get("rs") or 0) * sol_usd)
+                    # DexScreener does not show how full the curve is; graduation is about 411 SOL of market cap, so the
+                    # market cap in SOL gives a rough "about N% full" for the card badge.
+                    c = check_one(k_, S.SOURCES["curve"], pair=dict(p, liquidity={"usd": t.get("liq") or 0}))
+                    if c:
+                        c["curveProgress"] = max(1, min(99, round((c.get("mc") or 0) / (411 * (S.num(p.get("priceUsd")) / S.num(p.get("priceNative")) if S.num(p.get("priceNative")) else 1)) * 100)))
+                        c["warns"].insert(0, f"Still on the pump.fun curve, about {c['curveProgress']}% full. No pool yet, Jupiter limit orders may not work here")
+                else:
+                    c = check_one(k_, S.SOURCES["pumpfun"], pair=p)
+            except Exception as e:
+                S.say(f"meta {k_['symbol']}: check failed ({e})")
+                c = None
+            time.sleep(1)
+            if not c:
+                continue
+            c["fast"], c["firstSeenAgeH"], c["checkedAt"] = True, round(k_["ageH"], 2), now_iso()
+            c["meta"] = dict(name=b["name"], key=k, count=b["count"], creators=b["creators"], firstAt=datetime.fromtimestamp(b["firstAt"], timezone.utc).isoformat(),
+                             minutesSinceFirst=max(0, round((t_now - b["firstAt"]) / 60)), isFirst=mint == b["firstMint"], isLeader=mint == leader,
+                             leaderBuys=(traction.get(leader) or {}).get("buys"), myBuys=t.get("buys"))
+            if S.is_pass(c):
+                S.add_info(c, S.SOURCES["pumpfun"])
+                time.sleep(S.PAUSE)
+                S.add_big_trades(c, S.SOURCES["pumpfun"])
+                if S.is_pass(c):
+                    time.sleep(S.PAUSE)
+                    S.add_levels(c, S.SOURCES["pumpfun"], 50)
+                if c["verdict"] == "PASS" and c["warns"]:
+                    c["verdict"] = "PASS WITH WARNINGS"
+                time.sleep(S.PAUSE)
+            cards.append(c)
+    return cards, len(bursts)
 
 
 # ---------- the short lists ----------
@@ -295,10 +446,12 @@ def cycle(state, track, fast, books, out):
     # Big-coin lane: rejected only for size, checked for safety, paper traded by the "Big coins" playbook only
     big_rej = {r["token"]: r for s in res["sources"] if s["key"] not in ("survivors", "curve") for r in s["rejected"] if r["reason"].startswith("market cap over")}
     big_cards = big_lane(list(big_rej.values()), seen, now)
+    meta_cards, n_bursts = meta_lane(state, now)
     res["finished"] = now_iso()
     PB.backfill_mirrors(books)  # twin books (stop-slippage test) start with the whole history of their source book
-    opened = PB.consider(books, [(c, s["key"]) for s in res["sources"] for c in s["passed"]] + [(c, "big") for c in big_cards if S.is_pass(c)])
-    res_main = dict(res, sources=[s for s in res["sources"] if s["key"] != "curve"])  # curve coins: playbooks only, the card plan makes no sense there
+    opened = PB.consider(books, [(c, s["key"]) for s in res["sources"] for c in s["passed"]] + [(c, "big") for c in big_cards if S.is_pass(c)]
+                         + [(c, "meta") for c in meta_cards if S.is_pass(c)])
+    res_main = dict(res, sources=[s for s in res["sources"] if s["key"] not in ("curve", "meta")])  # curve coins: playbooks only, the card plan makes no sense there
     added = S.log_passed(track, res_main)
     for s in res["sources"]:
         for c in s["passed"]:
@@ -310,6 +463,9 @@ def cycle(state, track, fast, books, out):
     res["sources"].append(dict(key="big", label="Fast: Big coins (over $5M market cap, safe)", looked=len(big_rej), pagesRead=read, pagesPlanned=planned,
                                rejected=[], dropped=[], passed=[c for c in big_cards if S.is_pass(c)],
                                unchecked=[c for c in big_cards if c["verdict"] == "NOT CHECKED"], failed=[c for c in big_cards if c["verdict"] == "FAIL"]))
+    res["sources"].append(dict(key="meta", label=f"Fast: Meta bursts (same new name launched 4+ times in 15 min; {n_bursts} live)", looked=len(state.get("meta", {}).get("coins", {})),
+                               pagesRead=read, pagesPlanned=planned, rejected=[], dropped=[], passed=[c for c in meta_cards if S.is_pass(c)],
+                               unchecked=[c for c in meta_cards if c["verdict"] == "NOT CHECKED"], failed=[c for c in meta_cards if c["verdict"] == "FAIL"]))
     # Rolling view for the page: passes of the last 6 hours, fails of the last 2
     cut_p, cut_f = time.time() - KEEP_PASSED_H * 3600, time.time() - KEEP_FAILED_H * 3600
     old = {s["key"]: s for s in fast.get("sources", [])}

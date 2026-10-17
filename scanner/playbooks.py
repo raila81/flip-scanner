@@ -100,6 +100,25 @@ BOOKS = {
     "famous_any": dict(label="v2 Famous name (anywhere)", take="famous_any", entry="market", legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}],
                        stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
                        desc="Coins with a famous term somewhere in the name (Flying Tesla Roadster, Trump in Batter), not falling in the last hour. Same exits as Tight trail. The review says these lose; this checks it."),
+    # ---- Meta bursts (Rainer, Oct 17 2026). fast.py spots a "meta" when 3+ coins with the same new name appear on pump.fun within
+    # 15 minutes (bots copying a famous tweet). Two coins get a card: the first one created and the one with the most buyers.
+    "meta_first": dict(label="Meta burst: first coin", take="meta_first", entry="market", legs=[{"part": 1.0, "trail": 0.25, "act": 1.3}],
+                       stop=0.75, timeH=2, size=50, maxOpen=5, dayLoss=150, v2=True,
+                       desc="The first coin created in a name burst (4+ coins by 3+ creators with the same new name within 15 minutes). Market buy. Stop 25%. Once up 30%, a 25% trailing stop takes over. Out after 2 hours."),
+    "meta_leader": dict(label="Meta burst: most buyers", take="meta_leader", entry="market", legs=[{"part": 1.0, "trail": 0.25, "act": 1.3}],
+                        stop=0.75, timeH=2, size=50, maxOpen=5, dayLoss=150, v2=True,
+                        desc="The coin with the most buyers in a name burst (often, but not always, the first one). Same exits: stop 25%, 25% trail once up 30%, out after 2 hours."),
+    # ---- "Let it run" twins (Rainer, Oct 17 2026): the same buys as a winning book, but half the position has no 1-hour time stop.
+    # It stays in until its own trailing stop hits (30% off the peak), up to 3 days. Forward test only: no history is re-priced,
+    # because a different exit would need every old trade re-simulated on 1-minute candles that GeckoTerminal no longer has.
+    "trail_tight_run": dict(label="v2 Tight trail, half runs", mirror="trail_tight", take="mirror", entry="market",
+                            legs=[{"part": 0.5, "trail": 0.15, "act": 1.2}, {"part": 0.5, "trail": 0.30, "act": 1.2}],
+                            stop=0.95, timeH=72, size=50, maxOpen=10, dayLoss=150, v2=True,
+                            desc="The same buys as v2 Tight trail. Stop 5%. Once up 20%: half sells on a 15% trailing stop like Tight trail, the other half keeps running on a 30% trailing stop with no 1-hour time stop (3 days at most)."),
+    "famous_exact_run": dict(label="v2 Famous name (exact), half runs", mirror="famous_exact", take="mirror", entry="market",
+                             legs=[{"part": 0.5, "trail": 0.15, "act": 1.2}, {"part": 0.5, "trail": 0.30, "act": 1.2}],
+                             stop=0.95, timeH=72, size=50, maxOpen=10, dayLoss=150, v2=True,
+                             desc="The same buys as v2 Famous name (exact). Stop 5%. Once up 20%: half sells on a 15% trailing stop, the other half keeps running on a 30% trailing stop with no 1-hour time stop (3 days at most)."),
     "be_2x": dict(label="v2 2x with break-even", take="pool20nf", entry="market", legs=[{"part": 1.0, "tp": 2.0}], be=1.3,
                   stop=0.85, timeH=4, size=50, maxOpen=10, dayLoss=150, v2=True,
                   desc="Pool $20K+ and not falling in the last hour. Market buy. Stop 15%, moved up to the buy price once up 30%. Sell all at 2x. Out after 4 hours."),
@@ -129,7 +148,11 @@ def takes(book, c, src_key):
         return src_key == "survivors"
     if t == "curve":
         return src_key == "curve" and (c.get("curveProgress") or 0) <= 80
-    if src_key in ("survivors", "curve"):
+    if t == "meta_first":
+        return src_key == "meta" and bool((c.get("meta") or {}).get("isFirst"))
+    if t == "meta_leader":
+        return src_key == "meta" and bool((c.get("meta") or {}).get("isLeader"))
+    if src_key in ("survivors", "curve", "meta"):
         return False  # survivors and curve coins have their own playbooks, so the fresh-coin playbooks stay clean
     if t == "pass":
         return True
@@ -207,11 +230,12 @@ def consider(books, cards):
                      chart=c.get("chart"), logged=now_iso(), size=b["size"], price0=c["price"], liq0=c["liq"], mc0=c["mc"],
                      legs=legs, timeH=b["timeH"], stopRule=b["stop"], orderStop=o.get("stop") if o.get("ok") else None,
                      be=b.get("be"), candle=60 if b.get("v2") and b["timeH"] <= 2 else 900,  # old playbooks keep 15-minute candles
-                     slip=b.get("slip"), mirror=b.get("mirror"),
+                     slip=b.get("slip"), mirror=b.get("mirror"), onCurve=bool(c.get("curveProgress")),
                      entry=None, entryT=None, limit=None, stop0=None, now=None, liq=None, cash=0.0, pos=1.0, best=None, exit=None,
                      final=False, checked=None, outcome="Open", why="",
                      features=dict(firstSeenAgeH=c.get("firstSeenAgeH"), planOk=o.get("ok"), warns=len(c.get("warns") or []),
-                                   chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h"), curveProgress=c.get("curveProgress")))
+                                   chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h"), curveProgress=c.get("curveProgress"),
+                                   meta=c.get("meta")))
             if b["entry"] == "limit":
                 e.update(limit=o["entry"], outcome="Waiting for fill", why=f"limit buy at {S.money(o['entry'])}")
             elif mirror and mirror.get("entry"):
@@ -232,8 +256,8 @@ def backfill_mirrors(books):
     added = 0
     for name, b in BOOKS.items():
         src = b.get("mirror")
-        if not src:
-            continue
+        if not src or b.get("slip") is None:
+            continue  # exit-twins (no slip) run forward only; only stop-fill twins can re-price history exactly
         for key, e in list(trades.items()):
             if e.get("book") != src:
                 continue
@@ -306,16 +330,17 @@ def check_books(books, cache, say=S.say):
                     fill(e, e["entry"], e["entryT"])
             if e.get("entry"):
                 simulate(e, candles)
-        if e.get("entry") and not e["final"] and e.get("source") == "curve" and liq and liq >= 1000 and candles:
+        on_curve = e.get("source") == "curve" or e.get("onCurve")
+        if e.get("entry") and not e["final"] and on_curve and liq and liq >= 1000 and candles:
             # A curve coin with pool money has graduated: the curve stopped. The bot would sell at the last curve price.
             last = sorted(candles)[-1][4]
             e.update(cash=e["cash"] + e["pos"] * last / e["entry"], pos=0.0, outcome="Graduated, sold at the last curve price", exit=int(time.time()), final=True)
         if e.get("entry") and not e["final"]:
             if (e.get("best") or 0) > 100 or (now_p and now_p / e["entry"] > 100):
                 e.update(cash=1.0, pos=0.0, outcome="Bad data", exit=int(time.time()), final=True)
-            elif e.get("source") == "curve" and now_p and now_p / e["entry"] < 0.1:
+            elif on_curve and now_p and now_p / e["entry"] < 0.1:
                 e.update(cash=e["cash"] + e["pos"] * now_p / e["entry"], pos=0.0, outcome="Dead", exit=int(time.time()), final=True)
-            elif e.get("source") != "curve" and ((liq is not None and liq < 1000) or (now_p and now_p / e["entry"] < 0.1)):
+            elif not on_curve and ((liq is not None and liq < 1000) or (now_p and now_p / e["entry"] < 0.1)):
                 e.update(cash=e["cash"] + e["pos"] * (now_p or 0) / e["entry"], pos=0.0, outcome="Dead", exit=int(time.time()), final=True)
             elif time.time() > e["entryT"] + e["timeH"] * 3600 + 7200:
                 e.update(cash=e["cash"] + e["pos"] * (now_p or 0) / e["entry"], pos=0.0, outcome="Time stop", exit=int(time.time()), final=True)

@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Yield Scanner</title>
+<!--
+  Yield Scanner. Shows data/yields.json, written by yields/yields.py in the GitHub Actions chain (every 30 minutes).
+  Free data: DefiLlama (pools, protocols, hacks, fees), Hyperliquid, Hylo, CoinGecko. No keys, no server.
+  Risk tiers are decided in yields.py; this page only shows them. Research help, not financial advice.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3f5f9; --bg2:#e9edf5; --panel:rgba(255,255,255,.82); --panel-solid:#ffffff; --ink:#0f1320; --muted:#5b6478; --line:rgba(15,19,32,.1);
+  --accent:#3b5bff; --accent-ink:#ffffff; --lime:#1f9d55; --lime-bg:rgba(31,157,85,.12); --amber:#b45309; --amber-bg:rgba(180,83,9,.12);
+  --rose:#d1294a; --rose-bg:rgba(209,41,74,.12); --chip:rgba(15,19,32,.06); --shadow:0 10px 30px rgba(15,19,32,.08);
+  --blob1:rgba(59,91,255,.18); --blob2:rgba(31,157,85,.14); --blob3:rgba(180,83,9,.10);
+}
+:root[data-theme="dark"], :root:not([data-theme="light"]){
+  --bg:#06080f; --bg2:#0b0f1a; --panel:rgba(16,21,34,.74); --panel-solid:#111627; --ink:#e9edf7; --muted:#8e98b3; --line:rgba(233,237,247,.09);
+  --accent:#38e1ff; --accent-ink:#06080f; --lime:#b6ff3b; --lime-bg:rgba(182,255,59,.12); --amber:#ffb13b; --amber-bg:rgba(255,177,59,.12);
+  --rose:#ff3d8f; --rose-bg:rgba(255,61,143,.12); --chip:rgba(233,237,247,.07); --shadow:0 14px 40px rgba(0,0,0,.45);
+  --blob1:rgba(56,225,255,.14); --blob2:rgba(182,255,59,.09); --blob3:rgba(255,177,59,.10);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;overflow-x:hidden}
+.sky{position:fixed;inset:0;z-index:-1;overflow:hidden;background:
+  linear-gradient(to right,var(--line) 1px,transparent 1px) 0 0/64px 64px,
+  linear-gradient(to bottom,var(--line) 1px,transparent 1px) 0 0/64px 64px,var(--bg)}
+.sky i{position:absolute;border-radius:50%;filter:blur(80px);opacity:.9}
+.sky i:nth-child(1){width:60vw;height:60vw;left:-15vw;top:-20vw;background:var(--blob1)}
+.sky i:nth-child(2){width:50vw;height:50vw;right:-15vw;top:10vh;background:var(--blob2)}
+.sky i:nth-child(3){width:45vw;height:45vw;left:30vw;bottom:-25vw;background:var(--blob3)}
+.wrap{max-width:1240px;margin:0 auto;padding:20px 16px 60px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand svg{width:44px;height:44px;color:var(--accent)}
+h1{font:700 26px/1.1 "Space Grotesk",Inter,sans-serif;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:13px;margin-top:3px}
+.hdr-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+a{color:var(--accent)}
+button,.btn{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel-solid);color:var(--ink);border-radius:10px;padding:7px 12px}
+button.on,.btn.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.panel{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:16px;margin-bottom:16px}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.stat{padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:var(--panel-solid)}
+.stat .k{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.stat .v{font:700 22px/1.2 "Space Grotesk",Inter,sans-serif;margin-top:4px}
+.stat .v small{font:500 13px Inter;color:var(--muted)}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 12px}
+.tabs button{padding:9px 14px;border-radius:12px;font-weight:600}
+.tabs .cnt{opacity:.75;font-weight:500;margin-left:4px}
+.filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;color:var(--muted);font-size:13px}
+.filters label{display:flex;align-items:center;gap:6px;cursor:pointer}
+.filters input[type=search],.filters select,.calc input,.calc select{font:inherit;color:var(--ink);background:var(--panel-solid);border:1px solid var(--line);border-radius:10px;padding:7px 10px}
+.rule{padding:10px 14px;border-left:3px solid var(--accent);background:var(--chip);border-radius:10px;margin-bottom:12px;color:var(--muted);font-size:14px}
+.rule b{color:var(--ink)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap}
+th.num,td.num{text-align:right}
+td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr.row{cursor:pointer}
+tr.row:hover td{background:var(--chip)}
+.name{font-weight:600}
+.name small{display:block;color:var(--muted);font-weight:400;font-size:12px;margin-top:2px}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;background:var(--chip);color:var(--muted);white-space:nowrap}
+.chip.Low{background:var(--lime-bg);color:var(--lime)} .chip.Mid{background:var(--amber-bg);color:var(--amber)} .chip.High{background:var(--rose-bg);color:var(--rose)}
+.chip.none{background:var(--lime-bg);color:var(--lime)} .chip.SOL{background:var(--amber-bg);color:var(--amber)} .chip.mixed{background:var(--amber-bg);color:var(--amber)} .chip.coin{background:var(--rose-bg);color:var(--rose)}
+.apy{font:700 16px "JetBrains Mono",monospace} .apy small{display:block;font:500 12px Inter;color:var(--muted)}
+.up{color:var(--lime)} .down{color:var(--rose)}
+.what{color:var(--muted);font-size:13px;max-width:380px}
+.detail td{background:var(--chip);font-size:13px;color:var(--muted)}
+.detail b{color:var(--ink)}
+.detail .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 24px}
+.alert{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);margin-bottom:8px}
+.alert .lvl{width:10px;height:10px;border-radius:50%;margin-top:6px;flex:none}
+.alert.danger .lvl{background:var(--rose)} .alert.warn .lvl{background:var(--amber)} .alert.info .lvl{background:var(--muted)}
+.alert .p{font-weight:600}
+.calc{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;align-items:end;margin-bottom:14px}
+.calc label{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}
+.calc input,.calc select{width:100%}
+.presets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.presets button{font-size:13px}
+.out td,.out th{text-align:right} .out td:first-child,.out th:first-child{text-align:left}
+.foot{color:var(--muted);font-size:12px;margin-top:20px}
+.empty{color:var(--muted);padding:30px;text-align:center}
+@media (max-width:760px){
+  table,thead,tbody,tr,td,th{display:block}
+  thead{display:none}
+  tr.row{border:1px solid var(--line);border-radius:14px;padding:8px;margin-bottom:10px;background:var(--panel-solid)}
+  td{border:0;padding:4px 6px} td.num{text-align:left}
+  td[data-l]::before{content:attr(data-l) ": ";color:var(--muted);font-size:12px}
+  .detail{display:block;margin:-6px 0 12px}
+}
+</style>
+</head>
+<body>
+<div class="sky"><i></i><i></i><i></i></div>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 48 48" fill="none" aria-hidden="true"><path d="M8 36 L18 24 L26 30 L40 12" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="40" cy="12" r="4" fill="currentColor"/><path d="M8 40 H40" stroke="currentColor" stroke-opacity=".35" stroke-width="2"/></svg>
+      <div><h1>Yield Scanner</h1><div class="sub" id="lastinfo">Loading…</div></div>
+    </div>
+    <div class="hdr-right">
+      <a class="btn" href="index.html">Flip Scanner</a>
+      <button class="theme" id="theme" type="button">Light / dark</button>
+    </div>
+  </header>
+
+  <section class="panel">
+    <div class="strip" id="strip"></div>
+  </section>
+
+  <section class="panel">
+    <div class="tabs" id="tabs">
+      <button data-t="Low" class="on">Low risk <span class="cnt"></span></button>
+      <button data-t="Mid">Mid risk <span class="cnt"></span></button>
+      <button data-t="High">High risk <span class="cnt"></span></button>
+      <button data-t="alerts">Alerts <span class="cnt"></span></button>
+      <button data-t="calc">$5K calculator</button>
+    </div>
+
+    <div id="listview">
+      <div class="rule" id="rule"></div>
+      <div class="filters">
+        <label><input type="checkbox" id="solOnly" checked> Solana only</label>
+        <label><input type="checkbox" id="stableOnly"> Stablecoins only (no price risk)</label>
+        <label>Pool at least
+          <select id="minTvl"><option value="1000000">$1M</option><option value="5000000">$5M</option><option value="20000000" selected>$20M</option><option value="100000000">$100M</option></select>
+        </label>
+        <input type="search" id="q" placeholder="Search name or coin">
+        <span id="shown"></span>
+      </div>
+      <table>
+        <thead><tr>
+          <th data-s="name">Product</th><th>What it is</th><th class="num" data-s="apy">Yield now</th><th class="num" data-s="tvl">Pool size</th><th data-s="priceRisk">Price risk</th><th></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden>Nothing matches these filters.</div>
+    </div>
+
+    <div id="alertview" hidden>
+      <div class="rule">Alerts come from the scanner's own rules: a hack in the last year (DefiLlama hack list), a yield spike above 2.5x the 30-day average, a yield that fell 40% or a pool that shrank 30% in 7 days, a stablecoin yield under 3%, Jupiter perps fees under $2M a month, Hylo collateral under 1.3. A quiet list is good news.</div>
+      <div id="alerts"></div>
+      <h3 style="margin:22px 0 8px;font:700 16px 'Space Grotesk'">Biggest Solana hacks in the last 12 months</h3>
+      <div id="hacks" style="color:var(--muted);font-size:13px"></div>
+    </div>
+
+    <div id="calcview" hidden>
+      <div class="rule">Money is re-invested monthly. "Share that moves with prices" is how much of the money is in coins (SOL, JUP, LP). The scenario moves that share over 12 months. A bad event (hack, depeg, impermanent loss) takes the chosen slice off the end result. Not a forecast, a what-if.</div>
+      <div class="presets" id="presets"></div>
+      <div class="calc">
+        <div><label>Start money ($)</label><input type="number" id="cAmt" value="5000" step="100"></div>
+        <div><label>Yield a year (%)</label><input type="number" id="cApy" value="5.5" step="0.1"></div>
+        <div><label>Share that moves with prices (%)</label><input type="number" id="cShare" value="0" step="5" min="0" max="100"></div>
+        <div><label>Price scenario over 12 months</label><select id="cScen"><option value="0">Flat</option><option value="0.5">Bull +50%</option><option value="1">Bull +100%</option><option value="-0.4">Bear -40%</option><option value="-0.6">Crash -60%</option></select></div>
+        <div><label>One bad event: loss (%)</label><input type="number" id="cBad" value="0" step="5" min="0" max="100"></div>
+      </div>
+      <div id="calcname" class="sub" style="margin-bottom:8px"></div>
+      <table class="out"><thead><tr><th>Scenario</th><th>3 months</th><th>6 months</th><th>9 months</th><th>12 months</th></tr></thead><tbody id="calcout"></tbody></table>
+      <div class="sub" id="calcincome" style="margin-top:10px"></div>
+    </div>
+  </section>
+
+  <div class="foot">Data: DefiLlama (pools, protocols, hack list, fees), Hyperliquid API, Hylo API, CoinGecko. Updated by yields/yields.py every 30 minutes with the flip scan. Yields are today's numbers and will move. Research help, not financial advice. Page version <span id="ver"></span>.</div>
+</div>
+
+<script>
+const VERSION = "2026-10-17y1";
+document.getElementById("ver").textContent = VERSION;
+const $ = s => document.querySelector(s);
+try { const t = localStorage.getItem("flipTheme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$("#theme").onclick = () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("flipTheme", next); } catch (e) {}
+};
+
+let data = null, tab = "Low", sortKey = "tvl", sortDir = -1, open = null;
+const fmtM = n => n == null ? "–" : n >= 1e9 ? "$" + (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? "$" + (n / 1e6).toFixed(1) + "M" : "$" + Math.round(n / 1e3) + "K";
+const pct = n => n == null ? "n/a" : n.toFixed(n >= 100 ? 0 : n >= 10 ? 1 : 2) + "%";
+const money = n => "$" + Math.round(n).toLocaleString();
+const RISK_TXT = {none: "none (dollar coin)", SOL: "SOL price", mixed: "mixed basket", coin: "coin price"};
+const SHARE = {none: 0, SOL: 100, mixed: 60, coin: 100};
+
+// Plans from the Oct 17 2026 report (blended yield, share moving with prices, bad-event loss). Plain what-ifs.
+const PRESETS = [
+  ["A. Stablecoins", 5.5, 0, 10], ["B. Solana mix", 7, 55, 10], ["C. Dividend coins", 9, 60, 15], ["D. Fabiano 2025 style", 11, 35, 20],
+  ["E. RWA + lending", 9, 0, 20], ["F. Perps pool + staking", 8.5, 75, 15], ["G. SOL-USDC LP", 35, 50, 30], ["H. JUP + leverage", 14, 90, 50],
+];
+
+async function load() {
+  try {
+    const r = await fetch("data/yields.json?t=" + Math.floor(Date.now() / 300000), {cache: "no-store"});
+    data = await r.json();
+  } catch (e) { $("#lastinfo").textContent = "Could not load data/yields.json"; return; }
+  const age = Math.round((Date.now() - Date.parse(data.updated)) / 60000);
+  $("#lastinfo").textContent = `Updated ${new Date(data.updated).toLocaleString()} (${age < 60 ? age + " min" : Math.round(age / 60) + " h"} ago)`;
+  const c = data.counts, al = data.alerts || [];
+  const p = data.prices || {};
+  $("#strip").innerHTML = [
+    ["Low risk pools", c.Low, "trusted, big"], ["Mid risk", c.Mid, "younger, RWA, perps"], ["High risk", c.High, "LP, 20%+, small"],
+    ["Alerts", al.filter(a => a.level !== "info").length, al.filter(a => a.level === "danger").length + " danger"],
+    ["SOL", p.SOL ? "$" + p.SOL.toFixed(2) : "–", "CoinGecko"], ["JUP", p.JUP ? "$" + p.JUP.toFixed(3) : "–", "CoinGecko"],
+    ["JLP fees 30d", data.notes && data.notes.jlpFees30d ? fmtM(data.notes.jlpFees30d) : "–", "exit rule: under $2M"],
+    ["Hylo collateral", data.notes && data.notes.hyloCollateralRatio ? data.notes.hyloCollateralRatio.toFixed(2) : "–", "exit rule: under 1.3"],
+  ].map(([k, v, s]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v} <small>${s}</small></div></div>`).join("");
+  document.querySelectorAll("#tabs button").forEach(b => {
+    const t = b.dataset.t, n = t === "alerts" ? al.filter(a => a.level !== "info").length : c[t];
+    if (n != null) b.querySelector(".cnt").textContent = n;
+  });
+  render(); renderAlerts(); renderPresets(); calc();
+}
+
+function visibleRows() {
+  const sol = $("#solOnly").checked, st = $("#stableOnly").checked, min = +$("#minTvl").value, q = $("#q").value.trim().toLowerCase();
+  let rows = data.rows.filter(r => r.tier === tab && (!sol || r.chain === "Solana") && (!st || r.priceRisk === "none") && r.tvl >= min);
+  if (q) rows = rows.filter(r => (r.projectName + " " + r.symbol + " " + r.chain + " " + r.what).toLowerCase().includes(q));
+  rows.sort((a, b) => {
+    const va = sortKey === "name" ? a.projectName + a.symbol : sortKey === "priceRisk" ? SHARE[a.priceRisk] : (a[sortKey] ?? -1);
+    const vb = sortKey === "name" ? b.projectName + b.symbol : sortKey === "priceRisk" ? SHARE[b.priceRisk] : (b[sortKey] ?? -1);
+    return (va > vb ? 1 : va < vb ? -1 : 0) * sortDir;
+  });
+  return rows;
+}
+
+function render() {
+  if (!data) return;
+  const list = tab === "Low" || tab === "Mid" || tab === "High";
+  $("#listview").hidden = !list; $("#alertview").hidden = tab !== "alerts"; $("#calcview").hidden = tab !== "calc";
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === tab));
+  if (!list) return;
+  $("#rule").innerHTML = `<b>${tab} risk means:</b> ${data.rules[tab]}`;
+  const rows = visibleRows();
+  $("#shown").textContent = `${rows.length} shown`;
+  $("#empty").hidden = rows.length > 0;
+  $("#rows").innerHTML = rows.map(r => {
+    const spike = r.apy30d && r.apy > 2.5 * r.apy30d && r.apy > 8;
+    const tvlChg = r.tvl7dAgo ? (r.tvl / r.tvl7dAgo - 1) * 100 : null;
+    const warn = (r.alerts || []).filter(a => a.level !== "info").length;
+    return `<tr class="row" data-id="${r.id}">
+      <td><div class="name">${esc(r.projectName)} <span class="chip">${esc(r.symbol)}</span>${warn ? ` <span class="chip High">${warn} alert${warn > 1 ? "s" : ""}</span>` : ""}<small>${esc(r.chain)} · ${esc(r.why || "")}</small></div></td>
+      <td class="what">${esc(r.what)}</td>
+      <td class="num" data-l="Yield"><div class="apy">${r.apy == null ? "n/a" : pct(r.apy)}<small>30-day avg ${r.apy30d ? pct(r.apy30d) : "n/a"}${spike ? ' · <span class="down">spike</span>' : ""}${r.apyReward > 0 ? ` · ${pct(r.apyReward)} rewards` : ""}</small></div></td>
+      <td class="num mono" data-l="Pool">${fmtM(r.tvl)}${tvlChg != null ? `<br><small class="${tvlChg < -10 ? "down" : tvlChg > 10 ? "up" : ""}">${tvlChg >= 0 ? "+" : ""}${tvlChg.toFixed(0)}% in 7d</small>` : ""}</td>
+      <td data-l="Price risk"><span class="chip ${r.priceRisk}">${RISK_TXT[r.priceRisk]}</span></td>
+      <td><button class="use" data-id="${r.id}" type="button">Calculate</button></td>
+    </tr>${open === r.id ? detail(r) : ""}`;
+  }).join("");
+}
+
+function detail(r) {
+  const al = (r.alerts || []).map(a => `<div class="alert ${a.level}" style="margin:6px 0"><span class="lvl"></span><div>${esc(a.text)}</div></div>`).join("") || "No alerts for this pool.";
+  const links = [r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Project site</a>` : "", r.llama ? `<a href="${esc(r.llama)}" target="_blank" rel="noopener">DefiLlama page</a>` : ""].filter(Boolean).join(" · ");
+  return `<tr class="detail"><td colspan="6"><div class="grid">
+    <div><b>Exit rule</b><br>${esc(r.exit)}</div>
+    <div><b>Why this tier</b><br>${esc(r.why || "")}${r.ageDays ? `<br>Listed on DefiLlama ${Math.round(r.ageDays / 30)} months ago` : ""}${r.audits ? ` · audits listed: ${esc(String(r.audits))}` : ""}</div>
+    <div><b>Yield</b><br>Base ${pct(r.apyBase)}, rewards ${pct(r.apyReward)}, 30-day average ${r.apy30d ? pct(r.apy30d) : "n/a"}${r.apy7dAgo != null ? `, 7 days ago ${pct(r.apy7dAgo)}` : ""}</div>
+    <div><b>Alerts</b>${al}</div>
+    <div>${links}</div>
+  </div></td></tr>`;
+}
+
+function renderAlerts() {
+  const al = data.alerts || [];
+  $("#alerts").innerHTML = al.length ? al.map(a => `<div class="alert ${a.level}"><span class="lvl"></span><div><span class="p">${esc(a.product)}</span> <span class="chip ${a.tier}">${a.tier}</span><br>${esc(a.text)}</div></div>`).join("") : '<div class="empty">No alerts. Quiet is good.</div>';
+  $("#hacks").innerHTML = (data.solanaHacks12m || []).map(h => `${esc(h.when)} · <b>${esc(h.name)}</b> · ${fmtM(h.amount)} · ${esc(h.technique || "")}`).join("<br>");
+}
+
+function renderPresets() {
+  $("#presets").innerHTML = PRESETS.map((p, i) => `<button type="button" data-i="${i}">${p[0]}</button>`).join("");
+  $("#presets").onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    const p = PRESETS[+b.dataset.i];
+    $("#cApy").value = p[1]; $("#cShare").value = p[2]; $("#cBad").value = p[3];
+    $("#calcname").textContent = p[0] + " (from the Oct 17 2026 report)"; calc();
+  };
+}
+
+function calc() {
+  const amt = +$("#cAmt").value || 0, apy = +$("#cApy").value / 100, share = Math.min(100, Math.max(0, +$("#cShare").value)) / 100, bad = +$("#cBad").value / 100;
+  const scen = +$("#cScen").value;
+  const row = (label, move, badHit) => {
+    const cells = [3, 6, 9, 12].map(m => {
+      let v = amt * Math.pow(1 + apy, m / 12) + amt * share * (Math.pow(1 + move, m / 12) - 1);
+      if (badHit && m === 12) v -= amt * bad;
+      return v;
+    });
+    return `<tr><td>${label}</td>${cells.map((v, i) => `<td class="mono ${v < amt ? "down" : "up"}">${i === 3 || !badHit ? money(v) : ""}</td>`).join("")}</tr>`;
+  };
+  const lines = [row("Flat prices", 0, false)];
+  if (share > 0) { lines.push(row("Bull +50%", 0.5, false), row("Bear -40%", -0.4, false)); }
+  if (scen !== 0 && scen !== 0.5 && scen !== -0.4) lines.push(row(`Chosen scenario ${scen > 0 ? "+" : ""}${Math.round(scen * 100)}%`, scen, false));
+  if (bad > 0) lines.push(row(`Flat prices + one bad event (-${Math.round(bad * 100)}% of the money)`, 0, true));
+  $("#calcout").innerHTML = lines.join("");
+  $("#calcincome").textContent = `Income from yield alone: about ${money(amt * apy / 12)} a month, ${money(amt * apy)} a year. Price moves on ${Math.round(share * 100)}% of the money come on top (or take it away).`;
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c])); }
+
+$("#tabs").onclick = e => { const b = e.target.closest("button"); if (!b) return; tab = b.dataset.t; open = null; render(); };
+["#solOnly", "#stableOnly", "#minTvl"].forEach(s => $(s).onchange = render);
+$("#q").oninput = render;
+document.querySelectorAll("th[data-s]").forEach(th => th.onclick = () => { const k = th.dataset.s; if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = k === "name" ? 1 : -1; } render(); });
+$("#rows").onclick = e => {
+  const use = e.target.closest("button.use");
+  if (use) {
+    const r = data.rows.find(x => x.id === use.dataset.id); if (!r) return;
+    $("#cApy").value = r.apy ?? 0; $("#cShare").value = SHARE[r.priceRisk]; $("#cBad").value = r.tier === "Low" ? 10 : r.tier === "Mid" ? 20 : 40;
+    $("#calcname").textContent = `${r.projectName} ${r.symbol}: ${r.apy == null ? "no yield number" : pct(r.apy) + " a year"}, ${RISK_TXT[r.priceRisk]}, ${r.tier} risk (bad-event loss set to ${$("#cBad").value}%)`;
+    tab = "calc"; render(); calc(); return;
+  }
+  const tr = e.target.closest("tr.row"); if (!tr) return;
+  open = open === tr.dataset.id ? null : tr.dataset.id; render();
+};
+["#cAmt", "#cApy", "#cShare", "#cScen", "#cBad"].forEach(s => $(s).oninput = () => { $("#calcname").textContent = ""; calc(); });
+load();
+setInterval(load, 10 * 60 * 1000);
+</script>
+</body>
+</html>

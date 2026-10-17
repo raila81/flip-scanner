@@ -31,11 +31,14 @@ jobs:
         run: python3 scanner/scan.py --hours 6 --chains pumpfun,robinhood,movers,small,fresh --out data --no-track
       - name: What worked (plain statistics on the closed paper trades)
         run: python3 scanner/learn.py --out data/insights.json
+      - name: Yield scan (passive-income pools for yields.html)
+        continue-on-error: true
+        run: python3 yields/yields.py --out data
       - name: Save results
         run: |
           git config user.name "flip-scanner bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/latest.json data/insights.json
+          git add data/latest.json data/insights.json data/yields.json data/yields_history.json
           if git diff --cached --quiet; then echo "nothing new"; exit 0; fi
           git commit -m "Scan $(date -u +'%Y-%m-%d %H:%M') UTC"
           git pull --rebase origin main

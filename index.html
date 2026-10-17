@@ -206,6 +206,7 @@ table.track{min-width:980px}
     </div>
     <div class="hdr-right">
       <div class="ticker" id="ticker" hidden><span class="pulse"></span><span id="tickertext"></span></div>
+      <button class="theme" type="button" onclick="location.href='yields.html'" title="Passive-income pools sorted Low / Mid / High risk, with alerts and a $5K calculator">Yield Scanner</button>
       <button class="theme" id="theme" type="button">Light / dark</button>
     </div>
   </header>
@@ -1542,7 +1543,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-17b";
+const VERSION = "2026-10-17c";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {

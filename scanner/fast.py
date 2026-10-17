@@ -256,19 +256,24 @@ def meta_lane(state, now):
                 if not p:
                     continue
                 if p.get("dexId") == "pumpfun":  # still on the curve: real SOL in the curve stands in for the pool
-                    native = S.num(p.get("priceNative"))
-                    sol_usd = S.num(p.get("priceUsd")) / native if native else 0
+                    native, usd = S.num(p.get("priceNative")), S.num(p.get("priceUsd"))
+                    sol_usd = usd / native if native and usd else 0
                     t["liq"] = round((v.get("rs") or 0) * sol_usd)
+                    k_["liq"] = t["liq"]
                     # DexScreener does not show how full the curve is; graduation is about 411 SOL of market cap, so the
                     # market cap in SOL gives a rough "about N% full" for the card badge.
-                    c = check_one(k_, S.SOURCES["curve"], pair=dict(p, liquidity={"usd": t.get("liq") or 0}))
+                    if not usd:
+                        S.say(f"meta {k_['symbol']}: no dollar price yet, skipped")
+                        continue
+                    c = check_one(k_, S.SOURCES["curve"], pair=dict(p, liquidity={"usd": t.get("liq") or 0}, marketCap=p.get("marketCap") or p.get("fdv") or 0))
                     if c:
-                        c["curveProgress"] = max(1, min(99, round((c.get("mc") or 0) / (411 * (S.num(p.get("priceUsd")) / S.num(p.get("priceNative")) if S.num(p.get("priceNative")) else 1)) * 100)))
+                        c["curveProgress"] = max(1, min(99, round((c.get("mc") or 0) / (411 * sol_usd) * 100))) if sol_usd else 1
                         c["warns"].insert(0, f"Still on the pump.fun curve, about {c['curveProgress']}% full. No pool yet, Jupiter limit orders may not work here")
                 else:
                     c = check_one(k_, S.SOURCES["pumpfun"], pair=p)
             except Exception as e:
-                S.say(f"meta {k_['symbol']}: check failed ({e})")
+                import traceback
+                S.say(f"meta {k_['symbol']}: check failed ({e}) at {traceback.extract_tb(e.__traceback__)[-1].name}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
                 c = None
             time.sleep(1)
             if not c:

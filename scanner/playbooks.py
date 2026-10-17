@@ -5,6 +5,7 @@ Every rule here is one the real bot can copy 1:1 with Jupiter: a market buy at t
 buy at support, then take-profit legs, a stop, a trailing stop and a time stop, plus money rules (bet size,
 max open coins, a daily loss limit that pauses buying). Results live in data/books.json; the page shows a table.
 """
+import re
 import time
 from datetime import datetime, timezone
 
@@ -14,6 +15,43 @@ COST = 0.03          # the page takes 3% off every trade for fees and slippage
 MIN_AGE_S = 900      # a trade is first re-checked 15 minutes after the buy
 BUDGET_S = 240
 CARD = [{"part": 0.5, "tp": 2}, {"part": 0.4, "tp": 3}, {"part": 0.1, "trail": 0.4}]
+
+# ---- Famous names (Rainer, Oct 17 2026). The Oct 17 review found that all of "v2 Tight trail"'s profit came from coins named after
+# known brands, people or memes (YouTube, MrBeast, NASA, Samsung, GitHub, Rockstar, IShowSpeed, FOMO): +$1,132 on 70 trades, while the
+# other 338 trades lost $347. Two paper books test that on purpose. "exact" = the coin's name or ticker IS the famous term (YouTube,
+# NASA, MrBeast); "any" = the term appears somewhere in the name (Flying Tesla Roadster, Trump in Batter), which lost in the review.
+FAMOUS_TERMS = (
+    # companies, brands, products
+    "youtube|google|github|samsung|nasa|spacex|tesla|apple|iphone|microsoft|windows|amazon|meta|facebook|instagram|tiktok|netflix|"
+    "disney|pixar|nintendo|playstation|xbox|sony|rockstar|gta|gta ?6|minecraft|roblox|fortnite|pokemon|lego|nike|adidas|mcdonald'?s?|"
+    "burger king|kfc|starbucks|coca ?cola|pepsi|red ?bull|ferrari|lamborghini|porsche|bmw|mercedes|toyota|walmart|costco|ikea|visa|"
+    "mastercard|paypal|stripe|uber|airbnb|spotify|reddit|discord|telegram|whatsapp|snapchat|twitch|kick|openai|chatgpt|gpt|claude|"
+    "anthropic|gemini|grok|xai|nvidia|amd|intel|oracle|ibm|coinbase|binance|kraken|robinhood|wikipedia|pornhub|onlyfans|"
+    # people
+    "elon|musk|trump|melania|barron|biden|obama|putin|kim ?jong|zelensky|kanye|drake|taylor ?swift|beyonce|rihanna|kardashian|kylie|"
+    "ronaldo|messi|lebron|mbappe|neymar|jordan|tyson|mcgregor|mr ?beast|i ?show ?speed|speed|pewdiepie|kai ?cenat|logan ?paul|"
+    "jake ?paul|andrew ?tate|tate|joe ?rogan|rogan|oprah|zuckerberg|zuck|bezos|bill ?gates|jensen|saylor|vitalik|cz|altman|buffett|"
+    "powell|satoshi|nakamoto|snoop|eminem|bieber|bad ?bunny|travis ?scott|kendrick|hamilton|verstappen|einstein|pope|jesus|"
+    # characters and memes
+    "pepe|doge|shiba|wojak|chad|gigachad|bonk|wif|popcat|mog|brett|spongebob|patrick|squidward|pikachu|mario|luigi|sonic|batman|"
+    "joker|superman|spiderman|hulk|thor|goku|naruto|minions|shrek|homer|simpson|rick|morty|peppa|kermit|garfield|snoopy|"
+    "fomo|useless|hodl|wagmi|degen|rekt|moon|giga|sigma|rizz|skibidi|ohio|"
+    # institutions and events
+    "white ?house|pentagon|cia|fbi|fed|federal ?reserve|oscars|super ?bowl|world ?cup|olympics|halloween|christmas|thanksgiving"
+)
+FAMOUS = re.compile(r"\b(" + FAMOUS_TERMS + r")\b", re.I)
+FAMOUS_EXACT = re.compile(r"^\W*(?:the\s+)?(?:\$)?(" + FAMOUS_TERMS + r")(?:\s*(?:coin|token|games|inc|ai))?\W*$", re.I)
+
+
+def famous_kind(c):
+    """'exact' when the coin's name or ticker is a famous term by itself, 'any' when a term appears inside, else None."""
+    name, sym = (c.get("name") or ""), (c.get("symbol") or "")
+    if FAMOUS_EXACT.match(name) or FAMOUS_EXACT.match(sym):
+        return "exact"
+    if FAMOUS.search(name) or FAMOUS.search(sym):
+        return "any"
+    return None
+
 
 BOOKS = {
     "card": dict(label="Card plan as is", take="pass", entry="market", legs=CARD, stop="card", timeH=14 * 24, size=50, maxOpen=5, dayLoss=150,
@@ -56,6 +94,12 @@ BOOKS = {
     "trail_tight_s20": dict(label="v2 Tight trail, stops fill 20% worse", mirror="trail_tight", slip=0.20, take="mirror", entry="market",
                             legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
                             desc="Twin of v2 Tight trail: the same trades, but every stop or trailing-stop sale fills 20% worse than its price (Jupiter's default stop slippage is up to 20%)."),
+    "famous_exact": dict(label="v2 Famous name (exact)", take="famous_exact", entry="market", legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}],
+                         stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
+                         desc="Coins whose name or ticker IS a famous brand, person or meme (YouTube, NASA, MrBeast, FOMO) and not falling in the last hour. Same exits as Tight trail: stop 5%, 15% trail once up 20%, out after 1 hour."),
+    "famous_any": dict(label="v2 Famous name (anywhere)", take="famous_any", entry="market", legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}],
+                       stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
+                       desc="Coins with a famous term somewhere in the name (Flying Tesla Roadster, Trump in Batter), not falling in the last hour. Same exits as Tight trail. The review says these lose; this checks it."),
     "be_2x": dict(label="v2 2x with break-even", take="pool20nf", entry="market", legs=[{"part": 1.0, "tp": 2.0}], be=1.3,
                   stop=0.85, timeH=4, size=50, maxOpen=10, dayLoss=150, v2=True,
                   desc="Pool $20K+ and not falling in the last hour. Market buy. Stop 15%, moved up to the buy price once up 30%. Sell all at 2x. Out after 4 hours."),
@@ -98,6 +142,10 @@ def takes(book, c, src_key):
         return (c.get("liq") or 0) >= 20000
     if t == "notfalling":  # not falling in the last hour
         return (c.get("chg1") or 0) >= 0
+    if t == "famous_exact":  # famous name by itself, and not falling in the last hour
+        return famous_kind(c) == "exact" and (c.get("chg1") or 0) >= 0
+    if t == "famous_any":    # famous term inside the name (not exact), and not falling in the last hour
+        return famous_kind(c) == "any" and (c.get("chg1") or 0) >= 0
     if t == "pool20nf":    # both
         return (c.get("liq") or 0) >= 20000 and (c.get("chg1") or 0) >= 0
     if t == "nochase":

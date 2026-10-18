@@ -28,6 +28,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run the scan
+        env:
+          DEXPAPRIKA_KEY: ${{ secrets.DEXPAPRIKA_KEY }}
         run: python3 scanner/scan.py --hours 6 --chains pumpfun,robinhood,movers,small,fresh --out data --no-track
       - name: What worked (plain statistics on the closed paper trades)
         run: python3 scanner/learn.py --out data/insights.json

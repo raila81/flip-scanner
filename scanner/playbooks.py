@@ -318,7 +318,10 @@ def check_books(books, cache, say=S.say):
                 d = S.get_slow(f"{S.GT}/{e['chain']}/pools/{e['pair']}/ohlcv/{tf}")
                 candles = ((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
             except Exception:
-                candles = None
+                # DexPaprika backup: 1h candles keyless, 10-minute with a free key; 1-minute books get nothing.
+                candles = S.dp_candles(e["chain"], e["pair"], e.get("candle", 900) if tf.startswith("minute") else 3600) or None
+                if candles:
+                    e["candleSrc"] = "dexpaprika"
             cache[key] = (price, candles)
             time.sleep(S.PAUSE)
         (now_p, liq), candles = cache[key]

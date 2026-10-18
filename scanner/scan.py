@@ -155,6 +155,103 @@ def get_slow(url):
         return get(url)
 
 
+# ---------- DexPaprika: backup data source (added Oct 18 2026) ----------
+# Used only when GeckoTerminal fails. Keyless: 15 calls a minute, pool info + 1h candles for the last 24 hours.
+# A free key (console.dexpaprika.com, env DEXPAPRIKA_KEY) raises that to 30 a minute, 10-minute candles, 7 days.
+DP = "https://api.dexpaprika.com/networks"
+DP_KEY = os.environ.get("DEXPAPRIKA_KEY", "").strip()
+_dp_last = [0.0]
+
+
+def dp_get(url):
+    gap = 2.2 if DP_KEY else 4.5  # stay under the per-minute cap
+    wait = gap - (time.time() - _dp_last[0])
+    if wait > 0:
+        time.sleep(wait)
+    _dp_last[0] = time.time()
+    headers = {"User-Agent": "flip-scanner/1.0 (+github.com/raila81/flip-scanner)", "Accept": "application/json"}
+    if DP_KEY:
+        headers["Authorization"] = f"Bearer {DP_KEY}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=25) as r:
+        body = r.read()
+    return json.loads(body) if body.strip() else {}
+
+
+def dp_pool(network, pair):
+    """One pool from DexPaprika, reshaped to look like a GeckoTerminal pool so the filters need no change.
+    Returns None when DexPaprika does not know the pool. Price changes come as percent."""
+    try:
+        d = dp_get(f"{DP}/{network}/pools/{pair}")
+    except Exception:
+        return None
+    if not d or not d.get("id") or not d.get("base_token_id") or not num(d.get("last_price_usd")):
+        return None
+    toks = d.get("tokens") or []
+    base = next((t for t in toks if t.get("id") == d.get("base_token_id")), toks[0] if toks else {})
+    quote = next((t for t in toks if t.get("id") == d.get("quote_token_id")), {})
+    price = num(d.get("last_price_usd"))
+    supply = num(base.get("total_supply")) / (10 ** (base.get("decimals") or 0))
+    wins = (("h24", "24h"), ("h6", "6h"), ("h1", "1h"), ("m5", "5m"))
+    w = {k: (d.get(k2) or {}) for k, k2 in wins}
+    attrs = {
+        "name": f"{base.get('symbol') or '?'} / {quote.get('symbol') or '?'}", "address": d["id"],
+        "pool_created_at": d.get("created_at"), "base_token_price_usd": str(price),
+        "reserve_in_usd": str(num(d.get("liquidity_usd"))), "fdv_usd": str(price * supply), "market_cap_usd": None,
+        "volume_usd": {k: str(num(v.get("volume_usd"))) for k, v in w.items()},
+        "transactions": {k: {"buys": v.get("buys") or 0, "sells": v.get("sells") or 0, "buyers": None, "sellers": None} for k, v in w.items()},
+        "price_change_percentage": {k: str(num(v.get("last_price_usd_change"))) for k, v in w.items()},
+        "source": "dexpaprika",
+    }
+    return {"id": f"{network}_{d['id']}", "type": "pool", "attributes": attrs,
+            "relationships": {"base_token": {"data": {"id": f"{network}_{base.get('id')}"}},
+                              "quote_token": {"data": {"id": f"{network}_{quote.get('id')}"}},
+                              "dex": {"data": {"id": d.get("dex_id")}}}}
+
+
+def dp_candles(network, pair, want_seconds):
+    """Candles from DexPaprika in GeckoTerminal's shape ([ts, open, high, low, close, volume], newest first).
+    Keyless gives 1h candles for 24 hours; a free key gives 10-minute candles for 7 days. Returns [] when the
+    wanted candle size cannot be served (1-minute books cannot be backed up)."""
+    if want_seconds < 600 or (not DP_KEY and want_seconds < 3600):
+        return []
+    interval, back = ("10m", 7 * 86400) if DP_KEY and want_seconds < 3600 else ("1h", 7 * 86400 if DP_KEY else 86400 - 600)
+    start = datetime.fromtimestamp(time.time() - back, timezone.utc).strftime("%Y-%m-%dT%H:%M:00Z")
+    try:
+        rows = dp_get(f"{DP}/{network}/pools/{pair}/ohlcv?start={start}&interval={interval}&limit=1000")
+    except Exception:
+        return []
+    out = []
+    for c in rows if isinstance(rows, list) else []:
+        try:
+            ts = int(datetime.fromisoformat(c["time_open"].replace("Z", "+00:00")).timestamp())
+            out.append([ts, num(c.get("open")), num(c.get("high")), num(c.get("low")), num(c.get("close")), num(c.get("volume"))])
+        except Exception:
+            continue
+    out.sort(key=lambda r: -r[0])
+    return out
+
+
+def pools_multi(network, addrs, max_fallback=6):
+    """GeckoTerminal's 30-pool lookup, with DexPaprika as the backup when GeckoTerminal fails or answers empty.
+    The backup is one call per pool, so only the first few pools get it."""
+    try:
+        m = get_slow(f"{GT}/{network}/pools/multi/{','.join(addrs)}")
+        pools = [p for p in (m.get("data") or []) if p.get("attributes", {}).get("pool_created_at")]
+        if pools:
+            return pools
+    except Exception as e:
+        say(f"GeckoTerminal pool lookup failed ({e}), trying DexPaprika for {min(len(addrs), max_fallback)} pools")
+    pools = []
+    for a in addrs[:max_fallback]:
+        p = dp_pool(network, a)
+        if p:
+            pools.append(p)
+    if pools:
+        say(f"DexPaprika backup gave {len(pools)} of {len(addrs)} pools")
+    return pools
+
+
 def num(x):
     try:
         return float(x)
@@ -257,8 +354,7 @@ def pumpfun_fresh(page, window_h):
     pools = []
     for i in range(0, len(addrs), 30):
         time.sleep(PAUSE)
-        m = get_slow(f"{GT}/solana/pools/multi/{','.join(addrs[i:i + 30])}")
-        pools += [p for p in (m.get("data") or []) if p.get("attributes", {}).get("pool_created_at")]
+        pools += pools_multi("solana", addrs[i:i + 30])
     return pools, done
 
 
@@ -1005,7 +1101,9 @@ def check_results(track, cache=None):
                 d = get_slow(f"{GT}/{net}/pools/{e['pair']}/ohlcv/{tf}")
                 candles = ((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
             except Exception:
-                candles = None
+                candles = dp_candles(net, e["pair"], 900 if tf.startswith("minute") else 3600) or None
+                if candles:
+                    e["candleSrc"] = "dexpaprika"
             cache[key] = (price, candles)
             time.sleep(PAUSE)
         (now_p, liq), candles = cache[key]

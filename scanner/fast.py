@@ -115,8 +115,7 @@ def curve_coins():
     pools, addrs = [], [v["coin"]["bonding_curve"] for v in cands.values()]
     for i in range(0, len(addrs), 30):
         try:
-            m = S.get_slow(f"{S.GT}/solana/pools/multi/{','.join(addrs[i:i + 30])}")
-            pools += [p for p in (m.get("data") or []) if p.get("attributes", {}).get("pool_created_at")]
+            pools += S.pools_multi("solana", addrs[i:i + 30], max_fallback=0)  # curves are unknown to DexPaprika
         except Exception as e:
             S.say(f"curve pools lookup failed ({e})")
         time.sleep(S.PAUSE)

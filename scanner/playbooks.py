@@ -296,6 +296,34 @@ def simulate(e, candles):
     e.update(cash=r["cash"], pos=r["pos"], best=r["best"], exit=r["exit"], outcome=out, final=r["pos"] == 0)
 
 
+# Real trades around each paper stop (added Oct 18 2026): the paper book fills a stop at the candle low minus 10%.
+# To learn what a real sell would have fetched, the real swaps of the stop minute are saved from GeckoTerminal the
+# moment the paper trade closes (the trades endpoint only keeps the last 300 trades, so it must happen right away).
+RECORD_BOOKS = {"trail_tight", "famous_exact"}
+
+
+def record_chain_trades(e):
+    try:
+        d = S.get(f"{S.GT}/{e['chain']}/pools/{e['pair']}/trades?trade_volume_in_usd_greater_than=0")
+        rows = []
+        for t in (d.get("data") or []):
+            a = t.get("attributes") or {}
+            ts = S.ts_of(a.get("block_timestamp"))
+            if not ts or ts < e["exit"] - 180 or ts > e["exit"] + 900:
+                continue
+            kind = a.get("kind")
+            price = S.num(a.get("price_from_in_usd") if kind == "sell" else a.get("price_to_in_usd"))
+            rows.append([int(ts), kind[0] if kind else "?", price, round(S.num(a.get("volume_in_usd")), 2)])
+        rows.sort()
+        best = e.get("best") or 1.0
+        e["stopLevel"] = e["entry"] * max(0.95, 0.85 * best) if best >= 1.2 else e["stop0"]
+        e["chainTrades"] = rows[:120]
+        e["chainTradesN"] = len(rows)
+    except Exception as ex:
+        e["chainTrades"] = None
+        e["chainTradesErr"] = str(ex)[:80]
+
+
 def check_books(books, cache, say=S.say):
     """Re-check open playbook trades. cache: {(chain, token): ((price, liq), candles)}, shared with the main portfolio."""
     trades = books.get("trades", {})
@@ -332,7 +360,10 @@ def check_books(books, cache, say=S.say):
                 if e.get("entry"):
                     fill(e, e["entry"], e["entryT"])
             if e.get("entry"):
+                was_open = not e.get("final")
                 simulate(e, candles)
+                if was_open and e.get("final") and e["book"] in RECORD_BOOKS and e.get("outcome") in ("Stop hit", "All targets hit"):
+                    record_chain_trades(e)
         on_curve = e.get("source") == "curve" or e.get("onCurve")
         if e.get("entry") and not e["final"] and on_curve and liq and liq >= 1000 and candles:
             # A curve coin with pool money has graduated: the curve stopped. The bot would sell at the last curve price.

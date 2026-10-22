@@ -265,7 +265,7 @@ class Feed:
             try:
                 async with websockets.connect(WS, ping_interval=20, ping_timeout=20, max_size=2**23, compression=None) as ws:
                     self.ws = ws
-                    say(f"connected {WS}")
+                    say(f"connected {WS.split('?')[0]}")  # never log the API key
                     # re-subscribe whatever we were watching
                     self.sub_owner, self.pending, self.acct_sid = {}, {}, {}
                     for wt in self.watches.values():

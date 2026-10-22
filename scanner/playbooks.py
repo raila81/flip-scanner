@@ -244,6 +244,9 @@ def consider(books, cards):
                 fill(e, c["price"], time.time())
             trades[key] = e
             opened += 1
+            if name in RECORD_BOOKS and e.get("entry"):
+                watch_update(key, dict(book=name, token=e["token"], pair=e["pair"], chain=e["chain"], symbol=e["symbol"],
+                                       entry=e["entry"], entryT=e["entryT"], stop0=e["stop0"], legs=e["legs"], timeH=e["timeH"]))
     return opened
 
 
@@ -300,6 +303,51 @@ def simulate(e, candles):
 # To learn what a real sell would have fetched, the real swaps of the stop minute are saved from GeckoTerminal the
 # moment the paper trade closes (the trades endpoint only keeps the last 300 trades, so it must happen right away).
 RECORD_BOOKS = {"trail_tight", "famous_exact"}
+DATA_DIR = None  # set by fast.py; the live feed (scanner/feed.py) reads data/feed/watch.json and writes data/feed/<key>.json
+
+
+def feed_dir():
+    return os.path.join(DATA_DIR, "feed") if DATA_DIR else None
+
+
+def watch_update(key, fields):
+    """Tell the live feed about a paper trade (opened or closed). Small JSON file, replaced atomically."""
+    fd = feed_dir()
+    if not fd:
+        return
+    try:
+        os.makedirs(fd, exist_ok=True)
+        path = os.path.join(fd, "watch.json")
+        try:
+            items = json.load(open(path))
+        except Exception:
+            items = {}
+        cut = time.time() - 6 * 3600
+        items = {k: v for k, v in items.items() if (v.get("entryT") or 0) > cut}
+        items[key] = {**items.get(key, {}), **fields}
+        tmp = path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(items, fh, separators=(",", ":"))
+        os.replace(tmp, path)
+    except Exception as ex:
+        S.say(f"watch file failed: {ex}")
+
+
+def attach_feed(e):
+    """Copy the live feed's summary (without the price path) into the trade record. Returns True when final."""
+    fd = feed_dir()
+    if not fd:
+        return False
+    path = os.path.join(fd, e["book"] + "_" + e["token"] + ".json")
+    if not os.path.exists(path):
+        return False
+    try:
+        f = json.load(open(path))
+    except Exception:
+        return False
+    f.pop("path", None)
+    e["feed"] = f
+    return bool(f.get("final"))
 
 
 def record_chain_trades(e):
@@ -362,8 +410,14 @@ def check_books(books, cache, say=S.say):
             if e.get("entry"):
                 was_open = not e.get("final")
                 simulate(e, candles)
-                if was_open and e.get("final") and e["book"] in RECORD_BOOKS and e.get("outcome") in ("Stop hit", "All targets hit"):
-                    record_chain_trades(e)
+                if was_open and e.get("final") and e["book"] in RECORD_BOOKS:
+                    best = e.get("best") or 1.0
+                    e["stopLevel"] = e["entry"] * max(0.95, 0.85 * best) if best >= 1.2 else e["stop0"]
+                    watch_update(f"{e['book']}:{e['token']}", dict(closedAt=int(time.time()), exit=e.get("exit"), outcome=e.get("outcome"),
+                                                                 stopLevel=e["stopLevel"], best=best))
+                    if e.get("outcome") in ("Stop hit", "All targets hit"):
+                        record_chain_trades(e)
+                    attach_feed(e)
         on_curve = e.get("source") == "curve" or e.get("onCurve")
         if e.get("entry") and not e["final"] and on_curve and liq and liq >= 1000 and candles:
             # A curve coin with pool money has graduated: the curve stopped. The bot would sell at the last curve price.
@@ -381,4 +435,9 @@ def check_books(books, cache, say=S.say):
         e["checked"] = now_iso()
         n += 1
     books["updated"] = now_iso()
+    cut = time.time() - 900
+    for e in trades.values():
+        if e.get("final") and e["book"] in RECORD_BOOKS and (e.get("exit") or 0) > cut and not e.get("feedFinal"):
+            if attach_feed(e):
+                e["feedFinal"] = True
     return n

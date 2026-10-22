@@ -538,6 +538,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     state_path, track_path, fast_path = os.path.join(args.state, "seen.json"), os.path.join(args.out, "track.json"), os.path.join(args.out, "fast.json")
     books_path = os.path.join(args.out, "books.json")
+    PB.DATA_DIR = args.out  # the live feed (scanner/feed.py) shares data/feed with the playbooks
     code0 = code_hash()
     last_check = 0
     while True:
@@ -573,7 +574,7 @@ def main():
         save(fast_path, fast)
         save(books_path, books)
         if not args.no_git:
-            push([os.path.relpath(track_path, ROOT), os.path.relpath(fast_path, ROOT), os.path.relpath(books_path, ROOT)])
+            push([os.path.relpath(track_path, ROOT), os.path.relpath(fast_path, ROOT), os.path.relpath(books_path, ROOT), os.path.join(os.path.relpath(args.out, ROOT), "feed")])
         if args.once or not args.loop:
             break
         time.sleep(max(20, CYCLE_S - (time.time() - started)))

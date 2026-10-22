@@ -79,8 +79,11 @@ class Feed:
         self.sol_usd, self.sol_t = 0.0, 0
         self.ws = None
         self.req_id = 0
-        self.pending = {}        # request id -> (watch, side)
-        self.sub_owner = {}      # subscription id -> (watch, side)
+        self.pending = {}        # request id -> vault account being subscribed
+        self.sub_owner = {}      # subscription id -> vault account
+        self.acct_sid = {}       # vault account -> subscription id
+        self.watchers = {}       # vault account -> [(watch, side)]: two books on the same coin share one subscription
+        # (Oct 23 2026: subscribing the same account twice returns one subscription id, so one watch lost a side and its price ran wild)
         self.watch_mtime = 0
 
     # ---------- the watch list written by the playbooks ----------
@@ -140,9 +143,12 @@ class Feed:
         if not bv or not qv:
             wt.status = "unsupported pool (vaults not owned by the pool)"
             return False
-        wt.base_vault, wt.quote_vault = bv[0]["pubkey"], qv[0]["pubkey"]
-        wt.base = float(bv[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"] or 0)
-        wt.quote = float(qv[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"] or 0)
+        amt = lambda a: float(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"] or 0)
+        b0, q0 = max(bv, key=amt), max(qv, key=amt)  # a pool can own extra small accounts (fees); the reserve is the biggest
+        wt.base_vault, wt.quote_vault = b0["pubkey"], q0["pubkey"]
+        wt.base, wt.quote = amt(b0), amt(q0)
+        if len(bv) > 1 or len(qv) > 1:
+            say(f"{wt.w.get('symbol')}: pool owns {len(bv)} token and {len(qv)} SOL accounts, using the biggest")
         wt.ticks.append([int(time.time() * 1000), 0, wt.base, wt.quote])
         wt.status = "live"
         return True
@@ -155,16 +161,28 @@ class Feed:
 
     async def subscribe(self, wt):
         for side, acct in (("base", wt.base_vault), ("quote", wt.quote_vault)):
-            await self.send("accountSubscribe", [acct, {"encoding": "jsonParsed", "commitment": "processed"}], (wt, side))
+            lst = self.watchers.setdefault(acct, [])
+            if not any(w is wt for w, _ in lst):
+                lst.append((wt, side))
+            if acct not in self.acct_sid and acct not in self.pending.values():
+                await self.send("accountSubscribe", [acct, {"encoding": "jsonParsed", "commitment": "processed"}], acct)
 
     async def unsubscribe(self, wt):
-        for sid, (w, side) in list(self.sub_owner.items()):
-            if w is wt:
+        for acct in (wt.base_vault, wt.quote_vault):
+            if not acct:
+                continue
+            lst = [(w, sd) for w, sd in self.watchers.get(acct, []) if w is not wt]
+            if lst:
+                self.watchers[acct] = lst
+                continue
+            self.watchers.pop(acct, None)
+            sid = self.acct_sid.pop(acct, None)
+            if sid is not None:
+                self.sub_owner.pop(sid, None)
                 try:
                     await self.send("accountUnsubscribe", [sid])
                 except Exception:
                     pass
-                self.sub_owner.pop(sid, None)
 
     # ---------- summaries ----------
     def summary(self, wt, final=False):
@@ -189,7 +207,14 @@ class Feed:
             level_sol = level_usd / sol
             tokens = 25.0 / entry_usd
             entry_ms = (w.get("entryT") or wt.started) * 1000
-            trig = next((t for t in wt.ticks if t[0] >= entry_ms and t[2] and t[3] / t[2] <= level_sol), None)
+            start_ms = entry_ms
+            if (w.get("best") or 1) >= 1.2:
+                # a trailing stop: its level sits under the peak, so the trigger can only come after the peak
+                exit_ms = ((w.get("exit") or w.get("closedAt") or time.time()) + 60) * 1000
+                run = [t for t in wt.ticks if entry_ms <= t[0] <= exit_ms and t[2]]
+                if run:
+                    start_ms = max(run, key=lambda t: t[3] / t[2])[0]
+            trig = next((t for t in wt.ticks if t[0] >= start_ms and t[2] and t[3] / t[2] <= level_sol), None)
             if trig:
                 fills = {}
                 for lag in LAGS:
@@ -198,7 +223,7 @@ class Feed:
                     b, q = (last[-1] if last else trig)[2], (last[-1] if last else trig)[3]
                     got = q - (b * q) / (b + tokens * (1 - FEE))
                     fills[str(lag)] = round((got / tokens) / level_sol, 4)
-                out["stop"] = {"triggerT": trig[0] / 1000, "triggerAfterEntryS": round(trig[0] / 1000 - (w.get("entryT") or 0), 1),
+                out["stop"] = {"triggerT": trig[0] / 1000, "trailing": (w.get("best") or 1) >= 1.2, "triggerAfterEntryS": round(trig[0] / 1000 - (w.get("entryT") or 0), 1),
                                "fillVsLevel": fills, "ticksAfter30s": sum(1 for t in wt.ticks if trig[0] < t[0] <= trig[0] + 30000)}
             else:
                 out["stop"] = {"triggerT": None, "note": "level never touched on chain"}
@@ -242,7 +267,7 @@ class Feed:
                     self.ws = ws
                     say(f"connected {WS}")
                     # re-subscribe whatever we were watching
-                    self.sub_owner, self.pending = {}, {}
+                    self.sub_owner, self.pending, self.acct_sid = {}, {}, {}
                     for wt in self.watches.values():
                         if wt.status == "live":
                             await self.subscribe(wt)
@@ -278,30 +303,32 @@ class Feed:
 
     def on_message(self, m):
         if "id" in m and m["id"] in self.pending:
-            tag = self.pending.pop(m["id"])
+            acct = self.pending.pop(m["id"])
             if "result" in m and isinstance(m["result"], int):
-                self.sub_owner[m["result"]] = tag
+                self.sub_owner[m["result"]] = acct
+                self.acct_sid[acct] = m["result"]
             elif "error" in m:
-                say(f"subscribe failed for {tag[0].w.get('symbol')}: {m['error']}")
+                say(f"subscribe failed for {acct}: {m['error']}")
             return
         if m.get("method") != "accountNotification":
             return
         p = m.get("params") or {}
-        sid = p.get("subscription")
-        if sid not in self.sub_owner:
+        acct = self.sub_owner.get(p.get("subscription"))
+        if not acct:
             return
-        wt, side = self.sub_owner[sid]
         try:
             amt = float(p["result"]["value"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"] or 0)
             slot = p["result"]["context"]["slot"]
         except Exception:
             return
-        if side == "base":
-            wt.base = amt
-        else:
-            wt.quote = amt
-        if wt.base and wt.quote:
-            wt.ticks.append([int(time.time() * 1000), slot, wt.base, wt.quote])
+        now_ms = int(time.time() * 1000)
+        for wt, side in self.watchers.get(acct, []):
+            if side == "base":
+                wt.base = amt
+            else:
+                wt.quote = amt
+            if wt.base and wt.quote:
+                wt.ticks.append([now_ms, slot, wt.base, wt.quote])
 
 
 if __name__ == "__main__":

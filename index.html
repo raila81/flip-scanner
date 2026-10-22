@@ -303,7 +303,7 @@ table.track{min-width:980px}
     <p class="tsub">The same trades (both strategies, since Oct 6) replayed with other ways to sell. It shows which exit plan would have made the most, before you change the real orders. Stops fill 10% worse than their price, like a fast crash. Open trades count at today's price. Under about 30 trades the numbers mean little.</p>
     <h2>Playbooks: bot setups side by side</h2>
     <div class="views seasons" id="season" style="margin:0 0 12px">
-      <button data-season="s2" class="on">Season 2: from Oct 22, 05:30 UTC</button>
+      <button data-season="s2" class="on">Season 2: from Oct 22, 18:30 UTC</button>
       <button data-season="all">All time: from Oct 6</button>
     </div>
     <p class="tsub" id="seasonnote" style="margin-top:0"></p>
@@ -1548,7 +1548,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-22a";
+const VERSION = "2026-10-22b";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {
@@ -1639,7 +1639,7 @@ function renderFragile(all) {
   note.innerHTML = `${verdict} All rows buy the exact same coins at the same prices. Only how badly a stop or trailing-stop sale fills changes. A real fill depends on the pool and on how fast the price falls, and Jupiter's default stop slippage allows up to 20%. Only real small trades can show which row is true.`;
 }
 // Season 2 (Oct 22 2026): the real chain price twins start; the page can count every playbook from that moment only.
-const SEASON2 = Date.parse("2026-10-22T05:30:00Z");
+const SEASON2 = Date.parse("2026-10-22T18:30:00Z");
 let bookSeason = "s2";
 try { bookSeason = localStorage.getItem("flipSeason") || "s2"; } catch (e) {}
 document.querySelectorAll("#season button").forEach(b => {
@@ -1659,7 +1659,7 @@ function renderBooks() {
   const sn = $("#seasonnote");
   if (sn) sn.innerHTML = bookSeason === "all"
     ? "Every trade since each playbook started (Oct 6 to Oct 17). Paper buys use DexScreener's price, which can be minutes old on fast coins."
-    : "Every playbook counted from zero, from Oct 22, 05:30 UTC. The new <b>real chain price</b> books buy the same coins as their source book, but at the on-chain price the live feed saw 1 second after the paper buy. Compare each source book with its real-price twin: the gap is how much the stale paper price flatters the result.";
+    : "Every playbook counted from zero, from Oct 22, 18:30 UTC. The new <b>real chain price</b> books buy the same coins as their source book, but at the on-chain price the live feed saw 1 second after the paper buy. Compare each source book with its real-price twin: the gap is how much the stale paper price flatters the result.";
   const m = e => e.entry ? e.cash + e.pos * ((e.now ?? e.entry) / e.entry) : null;
   const net = e => m(e) * (1 - COST) - 1;
   const pct = x => `<span class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%</span>`;

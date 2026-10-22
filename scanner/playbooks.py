@@ -320,7 +320,7 @@ def simulate(e, candles):
 # To learn what a real sell would have fetched, the real swaps of the stop minute are saved from GeckoTerminal the
 # moment the paper trade closes (the trades endpoint only keeps the last 300 trades, so it must happen right away).
 RECORD_BOOKS = {"trail_tight", "famous_exact", "famous_any"}
-SEASON2 = "2026-10-22T05:30:00+00:00"  # season 2 (real chain price twins live): the page can show every book from this moment only
+SEASON2 = "2026-10-22T18:30:00+00:00"  # season 2 (real chain price twins live): the page can show every book from this moment only
 DATA_DIR = None  # set by fast.py; the live feed (scanner/feed.py) reads data/feed/watch.json and writes data/feed/<key>.json
 
 
@@ -402,6 +402,12 @@ def chain_fill(e):
         except Exception:
             f = None
     price = (f or {}).get("chainEntryUsd")
+    stale = (f or {}).get("entryStale")
+    if price and stale and not (0.5 <= stale <= 2.0):
+        # the feed's price is more than 2x off the paper price: almost always a wrong account or a broken pool read
+        e.update(outcome="Missed", why=f"the live feed's price was {stale:.3g}x the paper price (feed read looks wrong)",
+                 final=True, exit=int(time.time()), cash=1.0, pos=0.0, entryStale=stale)
+        return False
     if price and (f.get("feedDelayS") or 99) <= 30:
         fill(e, price, f.get("startedAt") or time.time())
         e.update(entryStale=f.get("entryStale"), feedDelayS=f.get("feedDelayS"), why="bought at the live feed's first on-chain price")
@@ -412,9 +418,24 @@ def chain_fill(e):
     return False
 
 
+def repair_chain_twins(trades):
+    """Twins filled before the 2x sanity check (Oct 23 2026): a feed price more than 2x off the paper price was a broken
+    read, so the trade is marked Bad data (counted flat), like other broken price data."""
+    n = 0
+    for e in trades.values():
+        if BOOKS.get(e["book"], {}).get("entry") == "chain" and e.get("entry") and e.get("entryStale") and not (0.5 <= e["entryStale"] <= 2.0) and e.get("outcome") != "Bad data":
+            e.update(cash=1.0, pos=0.0, outcome="Bad data", why=f"feed price was {e['entryStale']:.3g}x the paper price (broken read)",
+                     final=True, exit=e.get("exit") or int(time.time()))
+            n += 1
+    return n
+
+
 def check_books(books, cache, say=S.say):
     """Re-check open playbook trades. cache: {(chain, token): ((price, liq), candles)}, shared with the main portfolio."""
     trades = books.get("trades", {})
+    fixed = repair_chain_twins(trades)
+    if fixed:
+        say(f"{fixed} real-price twins had a broken feed price, marked Bad data")
     todo = [e for e in trades.values() if not e.get("final") and S.ts_of(e["logged"]) < time.time() - MIN_AGE_S]
     todo.sort(key=lambda e: (e.get("checked") or "", e["logged"]))
     started, n = time.time(), 0

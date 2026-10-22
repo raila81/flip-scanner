@@ -5,6 +5,8 @@ Every rule here is one the real bot can copy 1:1 with Jupiter: a market buy at t
 buy at support, then take-profit legs, a stop, a trailing stop and a time stop, plus money rules (bet size,
 max open coins, a daily loss limit that pauses buying). Results live in data/books.json; the page shows a table.
 """
+import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -312,10 +314,10 @@ def feed_dir():
 
 def watch_update(key, fields):
     """Tell the live feed about a paper trade (opened or closed). Small JSON file, replaced atomically."""
-    fd = feed_dir()
-    if not fd:
-        return
     try:
+        fd = feed_dir()
+        if not fd:
+            return
         os.makedirs(fd, exist_ok=True)
         path = os.path.join(fd, "watch.json")
         try:

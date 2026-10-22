@@ -130,6 +130,9 @@ BOOKS = {
     "famous_exact_chain": dict(label="v2 Famous name (exact), real chain price", mirror="famous_exact", take="mirror", entry="chain",
                                legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
                                desc="The same buys as v2 Famous name (exact), but bought at the real on-chain price the live feed saw 1 second after the paper buy. Same exits: stop 5%, 15% trail once up 20%, out after 1 hour."),
+    "famous_any_chain": dict(label="v2 Famous name (anywhere), real chain price", mirror="famous_any", take="mirror", entry="chain",
+                             legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
+                             desc="The same buys as v2 Famous name (anywhere), but bought at the real on-chain price the live feed saw 1 second after the paper buy. Same exits: stop 5%, 15% trail once up 20%, out after 1 hour."),
     "be_2x": dict(label="v2 2x with break-even", take="pool20nf", entry="market", legs=[{"part": 1.0, "tp": 2.0}], be=1.3,
                   stop=0.85, timeH=4, size=50, maxOpen=10, dayLoss=150, v2=True,
                   desc="Pool $20K+ and not falling in the last hour. Market buy. Stop 15%, moved up to the buy price once up 30%. Sell all at 2x. Out after 4 hours."),
@@ -316,7 +319,8 @@ def simulate(e, candles):
 # Real trades around each paper stop (added Oct 18 2026): the paper book fills a stop at the candle low minus 10%.
 # To learn what a real sell would have fetched, the real swaps of the stop minute are saved from GeckoTerminal the
 # moment the paper trade closes (the trades endpoint only keeps the last 300 trades, so it must happen right away).
-RECORD_BOOKS = {"trail_tight", "famous_exact"}
+RECORD_BOOKS = {"trail_tight", "famous_exact", "famous_any"}
+SEASON2 = "2026-10-22T05:30:00+00:00"  # season 2 (real chain price twins live): the page can show every book from this moment only
 DATA_DIR = None  # set by fast.py; the live feed (scanner/feed.py) reads data/feed/watch.json and writes data/feed/<key>.json
 
 

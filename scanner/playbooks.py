@@ -121,6 +121,15 @@ BOOKS = {
                              legs=[{"part": 0.5, "trail": 0.15, "act": 1.2}, {"part": 0.5, "trail": 0.30, "act": 1.2}],
                              stop=0.95, timeH=72, size=50, maxOpen=10, dayLoss=150, v2=True,
                              desc="The same buys as v2 Famous name (exact). Stop 5%. Once up 20%: half sells on a 15% trailing stop, the other half keeps running on a 30% trailing stop with no 1-hour time stop (3 days at most)."),
+    # Real chain price twins (Oct 22 2026): the same buys as the source book, but the buy price is the live feed's first
+    # chain price (taken 1 s after the paper buy) instead of DexScreener's priceUsd, which lags minutes on fast coins.
+    # Exits as the source book, from the same 1-minute candles. Forward only. "Missed" = the feed had no price.
+    "trail_tight_chain": dict(label="v2 Tight trail, real chain price", mirror="trail_tight", take="mirror", entry="chain",
+                              legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
+                              desc="The same buys as v2 Tight trail, but bought at the real on-chain price the live feed saw 1 second after the paper buy (not DexScreener's price, which can be minutes old). Same exits: stop 5%, 15% trail once up 20%, out after 1 hour."),
+    "famous_exact_chain": dict(label="v2 Famous name (exact), real chain price", mirror="famous_exact", take="mirror", entry="chain",
+                               legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
+                               desc="The same buys as v2 Famous name (exact), but bought at the real on-chain price the live feed saw 1 second after the paper buy. Same exits: stop 5%, 15% trail once up 20%, out after 1 hour."),
     "be_2x": dict(label="v2 2x with break-even", take="pool20nf", entry="market", legs=[{"part": 1.0, "tp": 2.0}], be=1.3,
                   stop=0.85, timeH=4, size=50, maxOpen=10, dayLoss=150, v2=True,
                   desc="Pool $20K+ and not falling in the last hour. Market buy. Stop 15%, moved up to the buy price once up 30%. Sell all at 2x. Out after 4 hours."),
@@ -240,6 +249,9 @@ def consider(books, cards):
                                    meta=c.get("meta")))
             if b["entry"] == "limit":
                 e.update(limit=o["entry"], outcome="Waiting for fill", why=f"limit buy at {S.money(o['entry'])}")
+            elif b["entry"] == "chain":
+                e.update(outcome="Waiting for fill", why="buys at the live feed's first on-chain price",
+                         paperEntry=mirror.get("entry") if mirror else None)
             elif mirror and mirror.get("entry"):
                 fill(e, mirror["entry"], mirror["entryT"])  # the same buy, to the cent
             else:
@@ -374,6 +386,28 @@ def record_chain_trades(e):
         e["chainTradesErr"] = str(ex)[:80]
 
 
+def chain_fill(e):
+    """Fill a real-chain-price twin from the live feed's summary of its source trade. Returns True when filled."""
+    src = BOOKS.get(e["book"], {}).get("mirror")
+    fd = feed_dir()
+    path = os.path.join(fd, f"{src}_{e['token']}.json") if (fd and src) else None
+    f = None
+    if path and os.path.exists(path):
+        try:
+            f = json.load(open(path))
+        except Exception:
+            f = None
+    price = (f or {}).get("chainEntryUsd")
+    if price and (f.get("feedDelayS") or 99) <= 30:
+        fill(e, price, f.get("startedAt") or time.time())
+        e.update(entryStale=f.get("entryStale"), feedDelayS=f.get("feedDelayS"), why="bought at the live feed's first on-chain price")
+        return True
+    if time.time() - S.ts_of(e["logged"]) > 1800:
+        why = "the live feed had no price for this pool" if not f else f"the live feed started too late or saw no price ({(f or {}).get('status')})"
+        e.update(outcome="Missed", why=why, final=True, exit=int(time.time()), cash=1.0, pos=0.0)
+    return False
+
+
 def check_books(books, cache, say=S.say):
     """Re-check open playbook trades. cache: {(chain, token): ((price, liq), candles)}, shared with the main portfolio."""
     trades = books.get("trades", {})
@@ -404,6 +438,12 @@ def check_books(books, cache, say=S.say):
             time.sleep(S.PAUSE)
         (now_p, liq), candles = cache[key]
         e["now"], e["liq"] = now_p, liq
+        if not e.get("entry") and BOOKS.get(e["book"], {}).get("entry") == "chain":
+            chain_fill(e)
+            if e.get("final"):
+                e["checked"] = now_iso()
+                n += 1
+                continue
         if candles:
             if not e.get("entry") and e.get("limit"):
                 S.watch_fill(e, candles)  # sets entry/entryT on a fill, or Missed after 12 hours

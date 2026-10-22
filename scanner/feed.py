@@ -298,8 +298,8 @@ class Feed:
             except SystemExit:
                 raise
             except Exception as e:
-                say(f"websocket error ({e}), reconnecting in 5 s")
-                await asyncio.sleep(5)
+                say(f"websocket error ({str(e)[:80]}), reconnecting in 1 s")
+                await asyncio.sleep(1)  # Helius recycles connections ("1001 going away"); come back fast so few ticks are missed
 
     def on_message(self, m):
         if "id" in m and m["id"] in self.pending:

@@ -263,7 +263,7 @@ class Feed:
         code0 = hashlib.sha256(open(__file__, "rb").read()).hexdigest()
         while True:
             try:
-                async with websockets.connect(WS, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
+                async with websockets.connect(WS, ping_interval=20, ping_timeout=20, max_size=2**23, compression=None) as ws:
                     self.ws = ws
                     say(f"connected {WS}")
                     # re-subscribe whatever we were watching

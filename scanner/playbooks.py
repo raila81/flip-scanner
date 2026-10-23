@@ -548,6 +548,8 @@ def check_books(books, cache, say=S.say):
             say(f"playbooks: time budget used, {len(todo) - n} trades wait")
             break
         key = (e["chain"], e["token"], e.get("candle", 900))
+        if key not in cache and BOOKS.get(e["book"], {}).get("entry") == "chain" and feed_file(e):
+            cache[key] = ((e.get("now"), e.get("liq")), None)  # real-money twins run on the live feed: no candle calls needed
         if key not in cache:
             try:
                 p = S.find_pair(e["token"], e["chain"])
@@ -566,7 +568,8 @@ def check_books(books, cache, say=S.say):
             cache[key] = (price, candles)
             time.sleep(S.PAUSE)
         (now_p, liq), candles = cache[key]
-        e["now"], e["liq"] = now_p, liq
+        if now_p is not None:
+            e["now"], e["liq"] = now_p, liq
         if BOOKS.get(e["book"], {}).get("entry") == "chain":
             if not e.get("entry"):
                 chain_fill(e)

@@ -5,6 +5,7 @@ Every rule here is one the real bot can copy 1:1 with Jupiter: a market buy at t
 buy at support, then take-profit legs, a stop, a trailing stop and a time stop, plus money rules (bet size,
 max open coins, a daily loss limit that pauses buying). Results live in data/books.json; the page shows a table.
 """
+import glob
 import json
 import os
 import re
@@ -121,18 +122,6 @@ BOOKS = {
                              legs=[{"part": 0.5, "trail": 0.15, "act": 1.2}, {"part": 0.5, "trail": 0.30, "act": 1.2}],
                              stop=0.95, timeH=72, size=50, maxOpen=10, dayLoss=150, v2=True,
                              desc="The same buys as v2 Famous name (exact). Stop 5%. Once up 20%: half sells on a 15% trailing stop, the other half keeps running on a 30% trailing stop with no 1-hour time stop (3 days at most)."),
-    # Real chain price twins (Oct 22 2026): the same buys as the source book, but the buy price is the live feed's first
-    # chain price (taken 1 s after the paper buy) instead of DexScreener's priceUsd, which lags minutes on fast coins.
-    # Exits as the source book, from the same 1-minute candles. Forward only. "Missed" = the feed had no price.
-    "trail_tight_chain": dict(label="v2 Tight trail, real chain price", mirror="trail_tight", take="mirror", entry="chain",
-                              legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
-                              desc="The same buys as v2 Tight trail, but bought at the real on-chain price the live feed saw 1 second after the paper buy (not DexScreener's price, which can be minutes old). Same exits: stop 5%, 15% trail once up 20%, out after 1 hour."),
-    "famous_exact_chain": dict(label="v2 Famous name (exact), real chain price", mirror="famous_exact", take="mirror", entry="chain",
-                               legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
-                               desc="The same buys as v2 Famous name (exact), but bought at the real on-chain price the live feed saw 1 second after the paper buy. Same exits: stop 5%, 15% trail once up 20%, out after 1 hour."),
-    "famous_any_chain": dict(label="v2 Famous name (anywhere), real chain price", mirror="famous_any", take="mirror", entry="chain",
-                             legs=[{"part": 1.0, "trail": 0.15, "act": 1.2}], stop=0.95, timeH=1, size=50, maxOpen=10, dayLoss=150, v2=True,
-                             desc="The same buys as v2 Famous name (anywhere), but bought at the real on-chain price the live feed saw 1 second after the paper buy. Same exits: stop 5%, 15% trail once up 20%, out after 1 hour."),
     "be_2x": dict(label="v2 2x with break-even", take="pool20nf", entry="market", legs=[{"part": 1.0, "tp": 2.0}], be=1.3,
                   stop=0.85, timeH=4, size=50, maxOpen=10, dayLoss=150, v2=True,
                   desc="Pool $20K+ and not falling in the last hour. Market buy. Stop 15%, moved up to the buy price once up 30%. Sell all at 2x. Out after 4 hours."),
@@ -254,7 +243,10 @@ def consider(books, cards):
                 e.update(limit=o["entry"], outcome="Waiting for fill", why=f"limit buy at {S.money(o['entry'])}")
             elif b["entry"] == "chain":
                 e.update(outcome="Waiting for fill", why="buys at the live feed's first on-chain price",
-                         paperEntry=mirror.get("entry") if mirror else None)
+                         paperEntry=mirror.get("entry") if mirror else None, limit=mirror.get("limit") if mirror else None)
+                if mirror and mirror.get("entryT"):
+                    watch_update(key, dict(book=name, token=e["token"], pair=e["pair"], chain=e["chain"], symbol=e["symbol"],
+                                           entry=mirror["entry"], entryT=mirror["entryT"], timeH=e["timeH"]))
             elif mirror and mirror.get("entry"):
                 fill(e, mirror["entry"], mirror["entryT"])  # the same buy, to the cent
             else:
@@ -319,7 +311,20 @@ def simulate(e, candles):
 # Real trades around each paper stop (added Oct 18 2026): the paper book fills a stop at the candle low minus 10%.
 # To learn what a real sell would have fetched, the real swaps of the stop minute are saved from GeckoTerminal the
 # moment the paper trade closes (the trades endpoint only keeps the last 300 trades, so it must happen right away).
-RECORD_BOOKS = {"trail_tight", "famous_exact", "famous_any"}
+# Real-money twins (Rainer asked Oct 23 2026, "all playbooks set up as if live"): every source book gets a "<key>_chain"
+# twin that buys the same coins at the on-chain price the live feed sees 1 s after the paper buy (limit books: when the
+# chain price reaches the limit), and sells from the live tick path: targets at their price, stops and trailing stops
+# EXIT_DELAY_S after the price crosses them, minus the price impact of the whole position and the 0.3% pool fee.
+# Curve and meta books trade bonding curves, which the feed cannot watch, so they get no twin.
+LIVE_SKIP = {"curve_run", "curve_quick", "meta_first", "meta_leader"}
+for _k, _b in list(BOOKS.items()):
+    if _b.get("mirror") or _k in LIVE_SKIP or _k.endswith("_chain"):
+        continue
+    BOOKS[_k + "_chain"] = dict(_b, label=_b["label"] + ", real chain price", mirror=_k, take="mirror", entry="chain", paperEntry=_b["entry"],
+                                desc="Real-money version: the same buys as \"" + _b["label"] + "\", but at the on-chain price the live feed saw 1 second after the paper buy"
+                                     + (" (limit buys fill when the chain price reaches the limit)" if _b["entry"] == "limit" else "")
+                                     + ". Every sell is priced from the live pool: targets at their price, stops and trailing stops 2 seconds after the price crosses them, minus the price impact of the whole position and the pool fee. Original rules: " + _b["desc"])
+RECORD_BOOKS = {k for k in BOOKS if k + "_chain" in BOOKS}  # the live feed watches every source book with a twin
 SEASON2 = "2026-10-22T18:30:00+00:00"  # season 2 (real chain price twins live): the page can show every book from this moment only
 DATA_DIR = None  # set by fast.py; the live feed (scanner/feed.py) reads data/feed/watch.json and writes data/feed/<key>.json
 
@@ -390,17 +395,116 @@ def record_chain_trades(e):
         e["chainTradesErr"] = str(ex)[:80]
 
 
-def chain_fill(e):
-    """Fill a real-chain-price twin from the live feed's summary of its source trade. Returns True when filled."""
-    src = BOOKS.get(e["book"], {}).get("mirror")
+EXIT_DELAY_S = 2  # a real bot sells about 2 s after the price crosses the stop (see Oct 23 2026 review)
+
+
+def feed_file(e):
+    """The live feed's summary for a twin: its own file if the feed watched it, else its source's, else any book's
+    watch of the same pool (all books on a coin share the pool). Prefers the file with the most ticks."""
     fd = feed_dir()
-    path = os.path.join(fd, f"{src}_{e['token']}.json") if (fd and src) else None
-    f = None
-    if path and os.path.exists(path):
+    if not fd:
+        return None
+    best = None
+    for path in sorted(glob.glob(os.path.join(fd, f"*_{e['token']}.json"))):
         try:
             f = json.load(open(path))
         except Exception:
-            f = None
+            continue
+        if f.get("solUsd") and (best is None or (f.get("ticksN") or 0) > (best.get("ticksN") or 0)):
+            best = f
+    return best
+
+
+def feed_path(e):
+    """The tick path for a twin. Returns (path, solUsd)."""
+    f = feed_file(e)
+    if not f:
+        return None, None
+    pts = [x for x in (f.get("path") or []) if x[1]]
+    return (pts, f["solUsd"]) if pts else (None, None)
+
+
+def real_exit(e):
+    """Walk the on-chain tick path from the twin's buy with the book's own legs: a target leg sells at its price the
+    moment the chain price reaches it; a trailing leg (once armed at "act" x the buy) and the shared stop (moved to the
+    buy price once "be" x the buy is seen) sell EXIT_DELAY_S after the price crosses them, at the pool's price then,
+    minus the price impact of that part of the position (constant product, 0.3% fee). The time stop sells the rest.
+    Returns dict(cash, pos, best, legs, done, exit, kind, ...) or None when no path is available yet."""
+    pts, sol = feed_path(e)
+    if not pts:
+        return None
+    entry, t0 = e["entry"], e["entryT"]
+    after = [x for x in pts if x[0] >= t0 and x[1]]
+    if not after:
+        return None
+    legs = [dict(l) for l in (e.get("legs") or [{"part": 1.0}])]
+    stop = e.get("stop0") or entry * 0.95
+    be = e.get("be")
+    t_end = t0 + e["timeH"] * 3600
+    tokens_all = e["size"] / entry
+    best, cash, closed, exit_t, kind = entry, 0.0, 0, None, None
+
+    def sell(part, at):
+        state = [x for x in pts if x[0] <= at][-1]
+        price, quote = state[1], state[2]
+        base = quote / (price / sol) if (price and quote and sol) else 0
+        tok = tokens_all * part
+        if base <= 0:
+            return price * tok, state[0], price
+        got = quote - (base * quote) / (base + tok * 0.997)
+        return got * sol, state[0], price
+
+    for x in after:
+        t, px = x[0], x[1]
+        if t >= t_end:
+            for l in legs:
+                if not l.get("done"):
+                    p, ft, fp = sell(l["part"], t)
+                    cash += p; l.update(done=True, kind="time", t=ft, price=fp)
+            exit_t, kind = t, "time"
+            break
+        best = max(best, px)
+        if be and best >= entry * be:
+            stop = max(stop, entry)
+        for l in legs:
+            if l.get("done"):
+                continue
+            armed = l.get("trail") and l.get("act") and best >= entry * l["act"]
+            if l.get("tp") and px >= entry * l["tp"]:
+                tok = tokens_all * l["part"]
+                cash += entry * l["tp"] * tok * 0.997   # resting limit sell fills at its price, minus the pool fee
+                l.update(done=True, kind="tp", t=t, price=entry * l["tp"])
+            elif armed and px <= best * (1 - l["trail"]):
+                p, ft, fp = sell(l["part"], t + EXIT_DELAY_S)
+                cash += p; l.update(done=True, kind="trail", t=ft, price=fp)
+            elif not armed and px <= stop:
+                p, ft, fp = sell(l["part"], t + EXIT_DELAY_S)
+                cash += p; l.update(done=True, kind="stop", t=ft, price=fp)
+        if all(l.get("done") for l in legs):
+            exit_t = max(l["t"] for l in legs)
+            kinds = {l["kind"] for l in legs}
+            kind = "tp" if kinds == {"tp"} else "stop" if kinds == {"stop"} else "trail" if kinds == {"trail"} else "mixed"
+            break
+    pos = sum(l["part"] for l in legs if not l.get("done"))
+    return dict(cash=cash / e["size"], pos=round(pos, 6), best=best / entry, legs=legs, done=pos == 0, exit=exit_t, kind=kind,
+                pathEnd=pts[-1][0], last=pts[-1][1])
+
+
+def chain_fill(e):
+    """Fill a real-chain-price twin from the live feed's summary of its source trade. Returns True when filled."""
+    f = feed_file(e)
+    if e.get("limit") and BOOKS.get(e["book"], {}).get("paperEntry") == "limit":
+        pts = [x for x in ((f or {}).get("path") or []) if x[1]]
+        hit = next((x for x in pts if x[1] <= e["limit"]), None)
+        if hit:
+            fill(e, e["limit"], hit[0])
+            e.update(why="limit buy filled at the on-chain price", feedDelayS=(f or {}).get("feedDelayS"))
+            watch_update(f"{e['book']}:{e['token']}", dict(book=e["book"], token=e["token"], pair=e["pair"], chain=e["chain"], symbol=e["symbol"],
+                                                         entry=e["entry"], entryT=e["entryT"], timeH=e["timeH"]))
+            return True
+        if time.time() - S.ts_of(e["logged"]) > 12 * 3600 or (f and f.get("final")):
+            e.update(outcome="Missed", why="the on-chain price never came down to the limit", final=True, exit=int(time.time()), cash=1.0, pos=0.0)
+        return False
     price = (f or {}).get("chainEntryUsd")
     stale = (f or {}).get("entryStale")
     if price and stale and not (0.5 <= stale <= 2.0):
@@ -463,12 +567,39 @@ def check_books(books, cache, say=S.say):
             time.sleep(S.PAUSE)
         (now_p, liq), candles = cache[key]
         e["now"], e["liq"] = now_p, liq
-        if not e.get("entry") and BOOKS.get(e["book"], {}).get("entry") == "chain":
-            chain_fill(e)
-            if e.get("final"):
-                e["checked"] = now_iso()
-                n += 1
-                continue
+        if BOOKS.get(e["book"], {}).get("entry") == "chain":
+            if not e.get("entry"):
+                chain_fill(e)
+                if e.get("final"):
+                    e["checked"] = now_iso()
+                    n += 1
+                    continue
+            if e.get("entry"):
+                r = real_exit(e)
+                if r:
+                    hits = sum(1 for l in r["legs"] if l.get("kind") == "tp")
+                    e.update(cash=r["cash"], pos=r["pos"], best=r["best"], now=r["last"], realLegs=r["legs"], exitSrc="chain")
+                    if r["done"]:
+                        out = {"tp": "All targets hit", "stop": "Stop hit", "trail": "Trailing stop", "time": "Time stop" + (f" after {hits} target{'s' if hits != 1 else ''}" if hits else ""),
+                               "mixed": f"{hits} target{'s' if hits != 1 else ''} hit, rest stopped"}[r["kind"]] + " (real chain price)"
+                        e.update(exit=int(r["exit"]), outcome=out, final=True, why=f"sells priced from the live pool, {EXIT_DELAY_S} s after each stop")
+                        watch_update(f"{e['book']}:{e['token']}", dict(closedAt=int(time.time()), exit=e["exit"], outcome=out))
+                        e["checked"] = now_iso()
+                        n += 1
+                        continue
+                    stale = r["pathEnd"] < time.time() - 900
+                    if not stale or time.time() < e["entryT"] + e["timeH"] * 3600:
+                        e["outcome"] = f"{hits} target{'s' if hits != 1 else ''} hit, rest running" if hits else "Open"
+                        e["checked"] = now_iso()
+                        n += 1
+                        continue
+                    # the feed stopped before the book's time stop: the rest sells at the last chain price seen
+                    e.update(cash=e["cash"] + e["pos"] * r["last"] / e["entry"], pos=0.0, exit=int(r["pathEnd"]), final=True,
+                             outcome="Feed ended, rest sold at the last chain price", why="the live feed stopped before this book's time stop")
+                    e["checked"] = now_iso()
+                    n += 1
+                    continue
+                e["exitSrc"] = "candles"  # no usable path: fall back to the 1-minute candles below
         if candles:
             if not e.get("entry") and e.get("limit"):
                 S.watch_fill(e, candles)  # sets entry/entryT on a fill, or Missed after 12 hours

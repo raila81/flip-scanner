@@ -30,7 +30,7 @@ WSOL = "So11111111111111111111111111111111111111112"
 FEE = 0.003
 LAGS = (0, 2, 5, 10, 30)
 KEEP_AFTER_CLOSE = 240     # seconds of ticks kept after the paper close
-MAX_WATCH_S = 4 * 3600     # drop a watch after 4 hours whatever happened
+MAX_WATCH_S = 50 * 3600    # drop a watch after 50 hours whatever happened (the longest book runs 48 h)
 UA = {"User-Agent": "flip-feed/1.0 (github.com/raila81/flip-scanner)", "Content-Type": "application/json"}
 
 
@@ -228,23 +228,39 @@ class Feed:
             else:
                 out["stop"] = {"triggerT": None, "note": "level never touched on chain"}
         # path: all ticks in the first 3 minutes and around the trigger, else one per 5 s; capped
-        path, last_t = [], 0
+        # The path is what the real-price books price their exits from (Oct 23 2026), so it keeps every tick that
+        # moves the price 0.5% or more, plus one tick every 2 s; dense in the first 3 min and around the trigger.
+        path, last_t, last_p = [], 0, None
         trig_ms = (out.get("stop") or {}).get("triggerT")
         trig_ms = trig_ms * 1000 if trig_ms else None
         for t in wt.ticks:
+            if not t[2]:
+                continue
+            px = t[3] / t[2]
             dense = (t[0] - wt.ticks[0][0] < 180000) or (trig_ms and abs(t[0] - trig_ms) < 90000)
-            if dense or t[0] - last_t >= 5000:
-                path.append([t[0] // 1000, round(t[3] / t[2] * sol, 10) if t[2] and sol else None, round(t[3], 3)])
-                last_t = t[0]
-        if len(path) > 900:
-            step = len(path) // 900 + 1
-            path = path[::step]
+            moved = last_p is None or abs(px / last_p - 1) >= 0.005
+            if dense or moved or t[0] - last_t >= 2000:
+                path.append([t[0] // 1000, round(px * sol, 12) if sol else None, round(t[3], 3)])
+                last_t, last_p = t[0], px
+        if len(path) > 8000:  # keep the biggest moves when thinning
+            keep = set(range(0, len(path), len(path) // 5000 + 1))
+            for i in range(1, len(path)):
+                a, b = path[i - 1][1], path[i][1]
+                if a and b and abs(b / a - 1) >= 0.03:
+                    keep.add(i - 1); keep.add(i)
+            path = [path[i] for i in sorted(keep)]
         out["path"] = path
         return out
 
     def write_summaries(self, force=False):
         now = time.time()
         for key, wt in list(self.watches.items()):
+            if len(wt.ticks) > 60000:  # keep memory flat on hot coins: thin ticks older than an hour to about one per 2 s
+                cut, keep, last = int(now * 1000) - 3600000, [], 0
+                for t in wt.ticks:
+                    if t[0] >= cut or t[0] - last >= 2000:
+                        keep.append(t); last = t[0]
+                wt.ticks = keep
             done = (wt.closed_at and now - wt.closed_at > KEEP_AFTER_CLOSE) or (now - wt.started > MAX_WATCH_S) or wt.status.startswith("unsupported")
             if force or done or now - wt.last_write >= 20:
                 try:

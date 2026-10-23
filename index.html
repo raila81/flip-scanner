@@ -307,6 +307,11 @@ table.track{min-width:980px}
       <button data-season="all">All time: from Oct 6</button>
     </div>
     <p class="tsub" id="seasonnote" style="margin-top:0"></p>
+    <div class="views seasons" id="bookkind" style="margin:0 0 12px">
+      <button data-kind="all" class="on">All books</button>
+      <button data-kind="chain">Real-money versions only</button>
+      <button data-kind="paper">Paper versions only</button>
+    </div>
     <div class="bookgrid" id="bookcards"></div>
     <div class="twrap"><table class="baskets" id="books"></table></div>
     <p class="tsub" id="booksnote">Each playbook is a complete bot setup the real bot can copy 1:1 with Jupiter: which passes it takes, market or limit buy, the exact sell orders, a time stop, bet size, max open coins and a daily loss limit. All of them paper trade the same coins from the VPS fast scan (since Oct 6, 2026). Costs of 3% are taken off. Open trades count at today's price. A playbook earns trust only when it is green in both the older and the newer half of its trades, and under about 30 closed trades the numbers mean little.</p>
@@ -1548,7 +1553,7 @@ render(); updateTrackCount(); renderPaper();
 // ---------- results from the hourly scan on GitHub ----------
 // data/latest.json is written by scanner/scan.py (GitHub Actions, every 30 minutes); data/fast.json and data/track.json by scanner/fast.py (VPS).
 // The repo's track record is the shared truth; trades made by hand in this browser are merged in.
-const VERSION = "2026-10-22b";
+const VERSION = "2026-10-23a";
 let seenScan = null;
 try { seenScan = localStorage.getItem("flipSeenScan"); } catch (e) {}
 function toast(text, btn, onClick) {
@@ -1640,8 +1645,17 @@ function renderFragile(all) {
 }
 // Season 2 (Oct 22 2026): the real chain price twins start; the page can count every playbook from that moment only.
 const SEASON2 = Date.parse("2026-10-22T18:30:00Z");
-let bookSeason = "s2";
-try { bookSeason = localStorage.getItem("flipSeason") || "s2"; } catch (e) {}
+let bookSeason = "s2", bookKind = "all";
+try { bookSeason = localStorage.getItem("flipSeason") || "s2"; bookKind = localStorage.getItem("flipBookKind") || "all"; } catch (e) {}
+document.querySelectorAll("#bookkind button").forEach(b => {
+  b.classList.toggle("on", b.dataset.kind === bookKind);
+  b.onclick = () => {
+    bookKind = b.dataset.kind;
+    try { localStorage.setItem("flipBookKind", bookKind); } catch (e) {}
+    document.querySelectorAll("#bookkind button").forEach(x => x.classList.toggle("on", x === b));
+    renderBooks();
+  };
+});
 document.querySelectorAll("#season button").forEach(b => {
   b.classList.toggle("on", b.dataset.season === bookSeason);
   b.onclick = () => {
@@ -1659,11 +1673,11 @@ function renderBooks() {
   const sn = $("#seasonnote");
   if (sn) sn.innerHTML = bookSeason === "all"
     ? "Every trade since each playbook started (Oct 6 to Oct 17). Paper buys use DexScreener's price, which can be minutes old on fast coins."
-    : "Every playbook counted from zero, from Oct 22, 18:30 UTC. The new <b>real chain price</b> books buy the same coins as their source book, but at the on-chain price the live feed saw 1 second after the paper buy. Compare each source book with its real-price twin: the gap is how much the stale paper price flatters the result.";
+    : "Every playbook counted from zero, from Oct 22, 18:30 UTC. Every paper book has a <b>real-money version</b> (\"real chain price\"): the same coins, bought at the on-chain price the live feed saw 1 second after the paper buy, with every sell priced from the live pool (targets at their price, stops 2 seconds after the price crosses them, minus the price impact of the position and the pool fee). The real-money versions are the numbers to trust. The gap to the paper version is what paper prices hide.";
   const m = e => e.entry ? e.cash + e.pos * ((e.now ?? e.entry) / e.entry) : null;
   const net = e => m(e) * (1 - COST) - 1;
   const pct = x => `<span class="${x >= 0 ? "up" : "down"}">${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)}%</span>`;
-  const rows = Object.entries(books.books).map(([key, b]) => {
+  const rows = Object.entries(books.books).filter(([key]) => bookKind === "all" || (bookKind === "chain") === key.endsWith("_chain")).map(([key, b]) => {
     const ts = all.filter(e => e.book === key), entered = ts.filter(e => e.entry), closed = entered.filter(e => e.final && e.outcome !== "Bad data");
     const waiting = ts.filter(e => !e.entry && !e.final).length, open = entered.filter(e => !e.final).length;
     const missed = ts.filter(e => e.outcome === "Missed").length;

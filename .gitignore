@@ -2,5 +2,4 @@ __pycache__/
 *.pyc
 .DS_Store
 .claude/
-data/feed/watch.json
-data/feed/*.tmp
+data/feed/

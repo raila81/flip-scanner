@@ -574,7 +574,7 @@ def main():
         save(fast_path, fast)
         save(books_path, books)
         if not args.no_git:
-            push([os.path.relpath(track_path, ROOT), os.path.relpath(fast_path, ROOT), os.path.relpath(books_path, ROOT), os.path.join(os.path.relpath(args.out, ROOT), "feed")])
+            push([os.path.relpath(track_path, ROOT), os.path.relpath(fast_path, ROOT), os.path.relpath(books_path, ROOT)])  # data/feed stays on the VPS only (129 MB of price paths: pushing it jammed the repo, Oct 23-25 2026)
         if args.once or not args.loop:
             break
         time.sleep(max(20, CYCLE_S - (time.time() - started)))

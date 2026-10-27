@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 import scan as S
@@ -54,6 +55,61 @@ def famous_kind(c):
     if FAMOUS.search(name) or FAMOUS.search(sym):
         return "any"
     return None
+
+
+# ---- Holder screen (Rainer, Oct 27 2026). Most real-money losses are one-swap pool drains: a wallet sells and takes 50-85% of the
+# pool's SOL in one block. Rebuilt on chain for 241 Season 2 coins: when one wallet already held enough at the buy to take 50%+ of the
+# pool's SOL (h / (R + h), h = its tokens, R = the pool's tokens), 93% were drained within an hour. Two cheap Helius calls per coin.
+RPC_URL = os.environ.get("FEED_RPC") or "https://api.mainnet-beta.solana.com"
+_RISK = {}
+
+
+def _rpc(method, params):
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    req = urllib.request.Request(RPC_URL, data=body, headers={"Content-Type": "application/json", "User-Agent": "flip-scanner/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read()).get("result")
+
+
+def drain_risk(c):
+    """Share of the pool's SOL the biggest wallet (d1), the top 5 (d5) and top 10 (d10) would take by selling all at once.
+    Reads the coin's 20 biggest token accounts; the pool's own vault (owned by the pair address) gives R. None when unknown."""
+    tok, pool = c.get("token"), c.get("pair")
+    if c.get("chain") != "solana" or not tok or not pool:
+        return None
+    hit = _RISK.get(tok)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    res = None
+    try:
+        top = (_rpc("getTokenLargestAccounts", [tok]) or {}).get("value") or []
+        info = (_rpc("getMultipleAccounts", [[a["address"] for a in top], {"encoding": "jsonParsed"}]) or {}).get("value") or []
+        R, owners = 0.0, {}
+        for v in info:
+            try:
+                p = v["data"]["parsed"]["info"]
+                amt = float(p["tokenAmount"]["uiAmount"] or 0)
+            except (TypeError, KeyError, ValueError):
+                continue
+            if p["owner"] == pool:
+                R += amt
+            else:
+                owners[p["owner"]] = owners.get(p["owner"], 0) + amt
+        if R > 0:
+            hs = sorted(owners.values(), reverse=True)
+            share = lambda h: round(h / (R + h), 3)
+            res = dict(d1=share(hs[0]) if hs else 0.0, d5=share(sum(hs[:5])), d10=share(sum(hs[:10])))
+    except Exception:
+        res = None
+    _RISK[tok] = (time.time(), res)
+    return res
+
+
+def calm(c):
+    """Calm coin (Oct 27 2026 study): not a famous name, not falling in the last hour, at most 2,000 buyers in 24h.
+    Hype coins (famous names, thousands of bot buyers) were the ones drained."""
+    b = c.get("buyers24") or 0
+    return famous_kind(c) != "exact" and (c.get("chg1") or 0) >= 0 and 0 < b <= 2000
 
 
 BOOKS = {
@@ -131,6 +187,16 @@ BOOKS = {
     "surv_2x": dict(label="v2 Survivor 2x", take="surv", entry="market", legs=[{"part": 1.0, "tp": 2.0}], be=1.3,
                     stop=0.75, timeH=4, size=50, maxOpen=10, dayLoss=100, v2=True,
                     desc="Survivor coins. Market buy. Stop 25%, moved up to the buy price once up 30%. Sell all at 2x. Out after 4 hours. Based on only 11 trades."),
+    # ---- v3 calm coins (Rainer, Oct 27 2026). Picked by replaying 242 Season 2 coins on the live feed's real pool prices (800 exit
+    # rules x buy filters, 2 s buy delay, stops sold 2 s late with price impact and fees). No rule was green on all coins (best -4% a
+    # trade). Calm coins (not famous, at most 2,000 buyers in 24h, not falling) with this exit made +9% a trade on 79 coins, $50 bets;
+    # buying 10 s late or $200 bets nearly erased it. Picked on the same data it was tested on, so this is a forward test, not a winner.
+    "calm10": dict(label="v3 Calm coins, 10 minutes", take="calm", entry="market", legs=[{"part": 1.0, "tp": 2.0}],
+                   stop=0.80, timeH=10 / 60, size=50, maxOpen=10, dayLoss=150, v2=True,
+                   desc="Not a famous name, at most 2,000 buyers in 24h, not falling in the last hour. Market buy. Stop 20%. Sell all at 2x. Out after 10 minutes."),
+    "calm10_safe": dict(label="v3 Calm coins + holder screen", take="calm_safe", entry="market", legs=[{"part": 1.0, "tp": 2.0}],
+                        stop=0.80, timeH=10 / 60, size=50, maxOpen=10, dayLoss=150, v2=True,
+                        desc="Same as Calm coins, 10 minutes, but skips the coin when one wallet holds enough to take half the pool's SOL in one sell (checked on chain at the buy)."),
     "big": dict(label="Big coins (unproven)", take="big", entry="market", legs=[{"part": 0.5, "tp": 1.3}, {"part": 0.5, "tp": 1.5}], stop=0.85, timeH=48, size=100, maxOpen=5, dayLoss=200,
                 desc="Safe coins the scanner rejects only for a market cap over $5M. Market buy. 50% at 1.3x, 50% at 1.5x, stop 15%, out after 48 hours."),
 }
@@ -174,6 +240,13 @@ def takes(book, c, src_key):
         return famous_kind(c) == "any" and (c.get("chg1") or 0) >= 0
     if t == "pool20nf":    # both
         return (c.get("liq") or 0) >= 20000 and (c.get("chg1") or 0) >= 0
+    if t == "calm":
+        return calm(c)
+    if t == "calm_safe":   # calm, and no wallet can take half the pool in one sell
+        if not calm(c):
+            return False
+        r = drain_risk(c)
+        return r is not None and r["d1"] < 0.5
     if t == "nochase":
         ch = c.get("chartF") or {}
         if ch.get("runup2h") is None:
@@ -238,7 +311,8 @@ def consider(books, cards):
                      final=False, checked=None, outcome="Open", why="",
                      features=dict(firstSeenAgeH=c.get("firstSeenAgeH"), planOk=o.get("ok"), warns=len(c.get("warns") or []),
                                    chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h"), curveProgress=c.get("curveProgress"),
-                                   meta=c.get("meta")))
+                                   meta=c.get("meta"), buyers24=c.get("buyers24"),
+                                   drain=None if b.get("mirror") or src in ("curve", "meta") else drain_risk(c)))
             if b["entry"] == "limit":
                 e.update(limit=o["entry"], outcome="Waiting for fill", why=f"limit buy at {S.money(o['entry'])}")
             elif b["entry"] == "chain":

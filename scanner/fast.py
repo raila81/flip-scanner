@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -499,12 +500,30 @@ def git(*args):
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=180)
 
 
+def clear_stale_rebase():
+    """A rebase that was interrupted (Oct 23 2026) left .git/rebase-merge behind with only an autostash file; git then
+    refuses every `pull --rebase` ("already a rebase-merge directory") and the VPS drifted 500 commits away from GitHub."""
+    git("rebase", "--abort")
+    for d in ("rebase-merge", "rebase-apply"):
+        path = os.path.join(ROOT, ".git", d)
+        if os.path.isdir(path):
+            S.say(f"removing stale {d}")
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def pull():
+    clear_stale_rebase()
     r = git("pull", "--rebase", "--autostash", "origin", "main")
     if r.returncode:
-        S.say(f"git pull failed: {(r.stderr or r.stdout).strip()[:200]}")
-        git("rebase", "--abort")
-        return False
+        S.say(f"git pull --rebase failed: {(r.stderr or r.stdout).strip()[:160]}")
+        clear_stale_rebase()
+        # The VPS and GitHub change different files (books/track/fast here, latest/insights/yields there), so a plain
+        # merge always works and cannot jam on many unpushed commits.
+        r = git("pull", "--no-rebase", "--no-edit", "origin", "main")
+        if r.returncode:
+            S.say(f"git pull (merge) failed: {(r.stderr or r.stdout).strip()[:200]}")
+            git("merge", "--abort")
+            return False
     return True
 
 

@@ -1,0 +1,57 @@
+coins with candles 1102
+fresh coins still active (24h vol $30K+, pool $10K+) at age 2h: 33.7%
+fresh coins still active (24h vol $30K+, pool $10K+) at age 6h: 25.3%
+fresh coins still active (24h vol $30K+, pool $10K+) at age 12h: 20.3%
+fresh coins still active (24h vol $30K+, pool $10K+) at age 24h: 15.0%
+fresh coins still active (24h vol $30K+, pool $10K+) at age 48h: 9.4%
+filters 411 exits 135
+split at 1792995300
+
+TOP 40 picked on older coins (trimmed mean), then newer coins
+ +20.7% n  66 win 26% | newer   -5.2% trim   -9.5% med  -33.1% n  48 | lane, any age 6-96 & dd 0.4-0.8 & vol fading 1h<0.5x avg | all 3x st0.3 96h
+ +20.5% n  76 win 21% | newer  -15.6% trim  -19.8% med  -23.4% n  52 | lane, any age 6-96 & chg24>=0 & mc<100K | all 3x st0.2 96h
+ +20.3% n  53 win 32% | newer  -11.3% trim  -15.1% med  -33.1% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 3x st0.3 48h
+ +20.2% n  53 win 32% | newer  -11.9% trim  -15.7% med  -33.1% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 3x st0.3 24h
+ +19.8% n  66 win 27% | newer   -2.2% trim   -6.5% med  -33.1% n  48 | lane, any age 6-96 & dd 0.4-0.8 & vol fading 1h<0.5x avg | all 3x st0.3 48h
+ +19.2% n  53 win 34% | newer  -16.5% trim  -20.4% med  -42.8% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 3x st0.4 24h
+ +19.1% n  76 win 24% | newer  -24.8% trim  -29.2% med  -33.1% n  52 | lane, any age 6-96 & chg24>=0 & mc<100K | all 3x st0.3 96h
+ +18.9% n  53 win 26% | newer  -14.3% trim  -18.1% med  -33.1% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 3x st0.3 96h
+ +18.8% n  76 win 28% | newer  -21.6% trim  -25.9% med  -33.1% n  52 | lane, any age 6-96 & chg24>=0 & mc<100K | all 3x st0.3 24h
+ +18.8% n  76 win 21% | newer  -17.3% trim  -21.5% med  -23.4% n  52 | lane, any age 6-96 & chg24>=0 & mc<100K | all 3x st0.2 48h
+ +18.4% n  53 win 40% | newer   -8.3% trim  -12.0% med  -33.1% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 3x st0.3 12h
+ +18.4% n  76 win 22% | newer  -13.8% trim  -18.0% med  -23.4% n  52 | lane, any age 6-96 & chg24>=0 & mc<100K | all 3x st0.2 24h
+ +18.1% n  76 win 25% | newer  -26.5% trim  -30.9% med  -33.1% n  52 | lane, any age 6-96 & chg24>=0 & mc<100K | all 3x st0.3 48h
+ +18.1% n  46 win 22% | newer  +15.0% trim   +7.9% med  -23.4% n  27 | lane, any age 6-96 & dd 0.4-0.8 & mc 100-500K | all 3x st0.2 48h
+ +18.0% n  46 win 22% | newer  +16.0% trim   +9.0% med  -23.4% n  27 | lane, any age 6-96 & dd 0.4-0.8 & mc 100-500K | all 3x st0.2 96h
+ +17.9% n  48 win 21% | newer  -22.7% trim  -25.5% med  -23.4% n  26 | lane, any age 6-96 & dd 0.4-0.8 & mc<100K | all 3x st0.2 96h
+ +17.7% n  55 win 33% | newer   -5.3% trim  -11.0% med  -23.4% n  37 | lane, any age 6-96 & dd 0.4-0.8 & vol surge 1h>=2x avg | all 3x st0.2 12h
+ +17.6% n  66 win 21% | newer   -2.3% trim   -6.6% med  -23.4% n  48 | lane, any age 6-96 & dd 0.4-0.8 & vol fading 1h<0.5x avg | all 3x st0.2 96h
+ +17.3% n  55 win 24% | newer   -7.6% trim  -13.3% med  -23.4% n  37 | lane, any age 6-96 & dd 0.4-0.8 & vol surge 1h>=2x avg | all 3x st0.2 48h
+ +17.3% n  53 win 42% | newer   -8.3% trim  -12.0% med  -21.5% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 3x st0.4 12h
+ +16.8% n  46 win 26% | newer  +25.0% trim  +18.3% med  -33.1% n  27 | lane, any age 6-96 & dd 0.4-0.8 & mc 100-500K | all 3x st0.3 48h
+ +16.5% n  41 win 29% | newer  -10.9% trim  -17.9% med  -42.8% n  31 | lane, any age 6-96 & dd 0.4-0.8 & pool>=40K | all 3x st0.4 96h
+ +16.2% n  53 win 32% | newer  -17.6% trim  -21.4% med  -42.8% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 3x st0.4 48h
+ +16.2% n  46 win 39% | newer  +16.4% trim  +13.2% med  -33.1% n  27 | lane, any age 6-96 & dd 0.4-0.8 & mc 100-500K | all 2x st0.3 24h
+ +16.1% n  41 win 24% | newer   -1.6% trim   -8.3% med  -33.1% n  31 | lane, any age 6-96 & dd 0.4-0.8 & pool>=40K | all 3x st0.3 48h
+ +15.9% n  66 win 21% | newer   +0.6% trim   -3.6% med  -23.4% n  48 | lane, any age 6-96 & dd 0.4-0.8 & vol fading 1h<0.5x avg | all 3x st0.2 48h
+ +15.7% n  55 win 20% | newer   -7.0% trim  -12.7% med  -23.4% n  37 | lane, any age 6-96 & dd 0.4-0.8 & vol surge 1h>=2x avg | all 3x st0.2 96h
+ +15.7% n  46 win 39% | newer  +15.1% trim  +11.9% med  -33.1% n  27 | lane, any age 6-96 & dd 0.4-0.8 & mc 100-500K | all 2x st0.3 48h
+ +15.4% n  57 win 30% | newer   -7.9% trim  -12.0% med  -23.4% n  52 | lane, any age 6-96 & chg24>=0 & ran <3x ever | all 3x st0.2 48h
+ +15.4% n  46 win 24% | newer  +26.0% trim  +19.4% med  -33.1% n  27 | lane, any age 6-96 & dd 0.4-0.8 & mc 100-500K | all 3x st0.3 96h
+ +15.3% n  53 win 42% | newer   -6.6% trim   -8.5% med  -33.1% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 2x st0.3 12h
+ +15.2% n  76 win 30% | newer  -12.2% trim  -16.3% med  -42.8% n  52 | lane, any age 6-96 & chg24>=0 & mc<100K | all 3x st0.4 24h
+ +15.2% n  41 win 24% | newer   -3.7% trim  -10.5% med  -33.1% n  31 | lane, any age 6-96 & dd 0.4-0.8 & pool>=40K | all 3x st0.3 96h
+ +15.2% n  48 win 21% | newer  -20.8% trim  -23.6% med  -23.4% n  26 | lane, any age 6-96 & dd 0.4-0.8 & mc<100K | all 3x st0.2 48h
+ +15.1% n  53 win 36% | newer   -8.6% trim  -10.5% med  -33.1% n  57 | lane, any age 6-96 & chg6<0 & vol surge 1h>=2x avg | all 2x st0.3 24h
+ +15.0% n  55 win 25% | newer   -9.3% trim  -15.0% med  -23.4% n  37 | lane, any age 6-96 & dd 0.4-0.8 & vol surge 1h>=2x avg | all 3x st0.2 24h
+ +15.0% n  66 win 30% | newer   +1.4% trim   -2.8% med  -33.1% n  48 | lane, any age 6-96 & dd 0.4-0.8 & vol fading 1h<0.5x avg | all 3x st0.3 24h
+ +14.9% n  46 win 30% | newer  +28.7% trim  +22.2% med  -33.1% n  27 | lane, any age 6-96 & dd 0.4-0.8 & mc 100-500K | all 3x st0.3 24h
+ +14.8% n  47 win 47% | newer   -9.8% trim  -12.9% med  -42.8% n  36 | lane, any age 6-96 & chg6<0 & pool>=40K | all 2x st0.4 48h
+ +14.6% n  57 win 58% | newer   -6.5% trim   -8.6% med  -16.6% n  52 | lane, any age 6-96 & chg24>=0 & ran <3x ever | all 2x st0.3 12h
+of top 200: newer trimmed > 0: 34  mean newer trim -8.288433914204038
+BASE lane now | swing now (1.5x/2x/trail30, st25, 48h): n308 mean +0.4% trim -1.7% med -26.6% win 38%
+BASE lane now | quick now (1.25x, st15, 12h): n308 mean +1.5% trim +1.1% med +3.6% win 52%
+BASE lane now | 2x now (2x, st25, be1.3, 4h): n308 mean +0.6% trim -1.3% med -4.0% win 42%
+BASE lane, any age 6-96 | swing now (1.5x/2x/trail30, st25, 48h): n311 mean +0.2% trim -1.8% med -26.7% win 38%
+BASE lane, any age 6-96 | quick now (1.25x, st15, 12h): n311 mean +1.4% trim +0.9% med +3.0% win 51%
+BASE lane, any age 6-96 | 2x now (2x, st25, be1.3, 4h): n311 mean +0.5% trim -1.4% med -4.0% win 41%

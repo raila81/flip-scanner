@@ -125,7 +125,7 @@ def run(c, i, plan):
         # ran out of candles: no trades any more; value what is left at the last close, halved (dead pool)
         cash += left * o[-1][4] * 0.5
         left = 0
-    return cash / buy - COST
+    return cash / buy - 1 - COST
 
 
 def first_signal(c, ok):

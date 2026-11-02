@@ -131,6 +131,16 @@ BOOKS = {
     "surv_swing": dict(label="Survivor swing", take="surv", entry="market", legs=[{"part": 0.5, "tp": 1.5}, {"part": 0.3, "tp": 2}, {"part": 0.2, "trail": 0.3}],
                        stop=0.75, timeH=48, size=50, maxOpen=10, dayLoss=100,
                        desc="The same coins. Market buy. 50% sells at 1.5x, 30% at 2x, 20% trails 30%. Stop 25%, out after 48 hours."),
+    # ---- v3 survivors (Rainer, Oct 31 2026). Picked by replaying 1,102 tracked coins on 15-minute candles (Oct 16-28): of 200
+    # filter+exit picks found on older coins only 34 stayed green on newer ones. These two held in both halves, with stops filling
+    # 6% worse and 2% costs, and for neighbouring settings. Checked only at the moment the coin first enters the survivor lane,
+    # like the other survivor books. Forward test, not winners.
+    "surv_big": dict(label="v3 Survivor big pool", take="surv_big", entry="market", legs=[{"part": 1.0, "tp": 1.25}], stop=0.85, timeH=12,
+                     size=50, maxOpen=10, dayLoss=100,
+                     desc="Survivor coins with a pool of $40K+ and 24h volume under the market cap (calm, not churned by bots). Market buy. Sell all at 1.25x, stop 15%, out after 12 hours. Study: +5.6% a trade, 70% won, 103 coins."),
+    "surv_mid3x": dict(label="v3 Survivor mid-cap 3x", take="surv_mid3x", entry="market", legs=[{"part": 1.0, "tp": 3.0}], stop=0.70, timeH=48,
+                       size=50, maxOpen=10, dayLoss=100,
+                       desc="Survivor coins worth $100K-500K that sit 20-60% under their top since launch. Market buy. Sell all at 3x, stop 30%, out after 48 hours. Study: +36% a trade but only 29% won and 34 coins, so few big wins carry it."),
     "curve_run": dict(label="Curve run", take="curve", entry="market", legs=None, legsFn="to90", stop=0.70, timeH=1.5, size=50, maxOpen=5, dayLoss=100,
                       desc="Coins still on the pump.fun curve, 30-80% full. Market buy. Sell all at the price the curve has when 90% full, stop 30%, out after 90 minutes."),
     "curve_quick": dict(label="Curve quick", take="curve", entry="market", legs=[{"part": 1.0, "tp": 1.5}], stop=0.75, timeH=0.5, size=50, maxOpen=5, dayLoss=100,
@@ -215,6 +225,11 @@ def takes(book, c, src_key):
         return False
     if t == "surv":
         return src_key == "survivors"
+    if t == "surv_big":    # pool $40K+ and 24h volume under the market cap
+        return src_key == "survivors" and (c.get("liq") or 0) >= 40000 and 0 < (c.get("vol24") or 0) < (c.get("mc") or 0)
+    if t == "surv_mid3x":  # market cap $100K-500K and 20-60% under the top since launch
+        fh = (c.get("chartF") or {}).get("fromHighAll")
+        return src_key == "survivors" and 100000 <= (c.get("mc") or 0) < 500000 and fh is not None and -60 < fh <= -20
     if t == "curve":
         return src_key == "curve" and (c.get("curveProgress") or 0) <= 80
     if t == "meta_first":
@@ -310,7 +325,7 @@ def consider(books, cards):
                      entry=None, entryT=None, limit=None, stop0=None, now=None, liq=None, cash=0.0, pos=1.0, best=None, exit=None,
                      final=False, checked=None, outcome="Open", why="",
                      features=dict(firstSeenAgeH=c.get("firstSeenAgeH"), planOk=o.get("ok"), warns=len(c.get("warns") or []),
-                                   chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h"), curveProgress=c.get("curveProgress"),
+                                   chg1=c.get("chg1"), runup2h=(c.get("chartF") or {}).get("runup2h"), fromHighAll=(c.get("chartF") or {}).get("fromHighAll"), curveProgress=c.get("curveProgress"),
                                    meta=c.get("meta"), buyers24=c.get("buyers24"),
                                    drain=None if b.get("mirror") or src in ("curve", "meta") else drain_risk(c)))
             if b["entry"] == "limit":

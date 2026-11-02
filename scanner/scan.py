@@ -781,11 +781,18 @@ def add_levels(c, src, size):
     if not c.get("pair"):
         return
     try:
-        d = get_slow(f"{GT}/{src['network']}/pools/{c['pair']}/ohlcv/minute?aggregate=15&limit=24")
-        candles = sorted(((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or [])
+        # 200 candles = 50 hours, so survivors (6-48h old) show their top since launch; the plan still uses the last 6 hours.
+        d = get_slow(f"{GT}/{src['network']}/pools/{c['pair']}/ohlcv/minute?aggregate=15&limit=200")
+        full = sorted(((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or [])
     except Exception:
         return
+    candles = full[-24:]
     c["chartF"] = chart_features(candles, c["price"])
+    if c["chartF"] and c["price"]:
+        # Top since launch, one-candle wicks capped at 2x the candle body (as in the Oct 31 survivor study)
+        top = max(min(x[2], 2 * max(x[1], x[4])) for x in full)
+        c["chartF"]["fromHighAll"] = round((c["price"] / top - 1) * 100, 1) if top else None
+        c["chartF"]["candlesAll"] = len(full)
     last2h = candles[-8:]
     vol = sum(x[5] for x in last2h)
     zone = (sum((x[2] + x[3] + x[4]) / 3 * x[5] for x in last2h) / vol) if vol > 0 else (sum(x[4] for x in last2h) / len(last2h) if last2h else None)

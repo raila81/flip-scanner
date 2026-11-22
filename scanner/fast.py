@@ -75,8 +75,54 @@ SURV_EVERY_S = 600
 SURV = {"t": 0.0, "pools": []}
 
 
-def survivor_pools():
-    """PumpSwap pools that are busy or trending today: the candidates for the survivors lane (coins 6-48h old)."""
+def tracked_survivor_pools(track):
+    """Coins we already tracked when they were fresh and that are 6-48h old now (Nov 22 2026). GeckoTerminal's busiest and
+    volume pages filled up with bot pools (empty pool, millions in fake volume), so real survivors fell off them: on Nov 22
+    only 1 of 83 pools of the right age passed. DexScreener (30 coins per call, its own rate limit) throws out the dead ones
+    first; only the few left cost a GeckoTerminal call (30 pools per call), so they come back in the usual pool format."""
+    now = time.time()
+    toks = set()
+    for t in (track or {}).values():
+        if t.get("chain") != "solana" or not t.get("logged"):
+            continue
+        try:
+            first = datetime.fromisoformat(t["logged"].replace("Z", "+00:00")).timestamp() - (t.get("features") or {}).get("firstSeenAgeH", 0) * 3600
+        except Exception:
+            continue
+        if 5 * 3600 <= now - first <= 49 * 3600:
+            toks.add(t["token"])
+    toks = sorted(toks)
+    pairs = []
+    for i in range(0, len(toks), 30):
+        try:
+            for p in S.get(f"https://api.dexscreener.com/tokens/v1/solana/{','.join(toks[i:i + 30])}") or []:
+                if p.get("dexId") != "pumpswap" or (p.get("baseToken") or {}).get("address") not in toks:
+                    continue
+                age = (now - (p.get("pairCreatedAt") or 0) / 1000) / 3600
+                tx = (p.get("txns") or {}).get("h24") or {}
+                ch = p.get("priceChange") or {}
+                # loose version of the lane rules; prefilter() applies the exact ones on GeckoTerminal's numbers
+                if 5.5 <= age <= 48.5 and ((p.get("liquidity") or {}).get("usd") or 0) >= 9000 and (tx.get("sells") or 0) >= 80 \
+                        and (ch.get("h1") or 0) >= -12 and (ch.get("h24") or 0) >= -55:
+                    pairs.append(p["pairAddress"])
+        except Exception as e:
+            S.say(f"survivors from tracked coins: DexScreener failed ({e})")
+        time.sleep(0.3)
+    pools = []
+    pairs = sorted(set(pairs))
+    for i in range(0, len(pairs), 30):
+        try:
+            pools += S.get_slow(f"{S.GT}/solana/pools/multi/{','.join(pairs[i:i + 30])}").get("data") or []
+        except Exception as e:
+            S.say(f"survivors from tracked coins: GeckoTerminal failed ({e})")
+        time.sleep(S.PAUSE)
+    S.say(f"survivors from tracked coins: {len(toks)} coins 6-48h old, {len(pairs)} look alive, {len(pools)} pools read")
+    return pools
+
+
+def survivor_pools(track=None):
+    """PumpSwap pools that are busy or trending today, plus our own tracked coins that are 6-48h old now: the candidates
+    for the survivors lane."""
     if time.time() - SURV["t"] < SURV_EVERY_S and SURV["pools"]:
         return SURV["pools"]
     feeds = [(f"busiest PumpSwap p{p}", f"{S.GT}/solana/dexes/pumpswap/pools?sort=h24_tx_count_desc&page={p}") for p in (1, 2, 3, 4)]
@@ -91,6 +137,12 @@ def survivor_pools():
         except Exception as e:
             S.say(f"survivors list {name} failed ({e})")
         time.sleep(S.PAUSE)
+    try:
+        for p in tracked_survivor_pools(track):
+            if p.get("attributes", {}).get("pool_created_at") and p["relationships"]["dex"]["data"]["id"] == "pumpswap":
+                pools.setdefault(p["id"], p)
+    except Exception as e:
+        S.say(f"survivors from tracked coins failed ({e})")
     if pools:
         SURV["t"], SURV["pools"] = time.time(), list(pools.values())
         S.say(f"survivors list refreshed: {len(pools)} PumpSwap pools")
@@ -390,7 +442,7 @@ def cycle(state, track, fast, books, out):
     S.FEED_CACHE.clear()
     S.TAKEN.clear()
     pools, read, planned = fetch_lists()
-    surv_pools = survivor_pools()
+    surv_pools = survivor_pools(track)
     curve_cands, curve_pools = curve_coins()
     seen = state.setdefault("seen", {})
     now = time.time()
